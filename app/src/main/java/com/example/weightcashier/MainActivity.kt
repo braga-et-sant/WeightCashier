@@ -26,6 +26,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -33,6 +39,7 @@ import kotlin.math.max
 import kotlin.random.Random
 
 data class ProductItem(
+    val productId: String,
     val name: String,
     val weightKg: Double,
     val pricePerKg: Double,
@@ -51,8 +58,16 @@ data class ArchivedTransaction(
 data class ProductDefinition(
     val tagCode: String,
     val name: String,
-    val pricePerKg: Double,
+    val defaultPricePerKg: Double,
     val defaultWeightKg: Double
+)
+
+data class RaspberryItem(
+    val eventId: String,
+    val scaleId: String,
+    val productId: String,
+    val weightKg: Double,
+    val pricePerKg: Double
 )
 
 val productDatabase = listOf(
@@ -69,6 +84,7 @@ val productDatabase = listOf(
 )
 
 class MainActivity : ComponentActivity() {
+
     private var nfcAdapter: NfcAdapter? = null
     private var onTagRead: ((String) -> Unit)? = null
     private var onNfcStatusChange: ((String) -> Unit)? = null
@@ -111,7 +127,7 @@ class MainActivity : ComponentActivity() {
         if (tagText != null) {
             onTagRead?.invoke(tagText.trim().uppercase())
         } else {
-            onNfcStatusChange?.invoke("Could not read text from this NFC tag.")
+            onNfcStatusChange?.invoke("Could not read text from NFC tag.")
         }
     }
 
@@ -139,6 +155,7 @@ class MainActivity : ComponentActivity() {
             for (message in messages) {
                 for (record in message.records) {
                     val payload = record.payload ?: continue
+
                     if (payload.isEmpty()) continue
 
                     val languageCodeLength = payload[0].toInt() and 0x3F
@@ -161,10 +178,12 @@ class MainActivity : ComponentActivity() {
 
         return try {
             ndef.connect()
+
             val message = ndef.ndefMessage ?: return null
 
             for (record in message.records) {
                 val payload = record.payload ?: continue
+
                 if (payload.isEmpty()) continue
 
                 val languageCodeLength = payload[0].toInt() and 0x3F
@@ -200,10 +219,29 @@ fun WeightingCashierApp(
     onRegisterNfcCallbacks: (((String) -> Unit, (String) -> Unit) -> Unit),
     onOpenNfcSettings: () -> Unit
 ) {
+
+    var isLoggedIn by remember { mutableStateOf(false) }
+    var loggedUser by remember { mutableStateOf("") }
+
+    if (!isLoggedIn) {
+        LoginScreen(
+            onLoginSuccess = { username ->
+                loggedUser = username
+                isLoggedIn = true
+            }
+        )
+        return
+    }
+
     var selectedScale by remember { mutableStateOf("Scale 1") }
     var developerMode by remember { mutableStateOf(false) }
     var readProductMode by remember { mutableStateOf(false) }
     var readScaleMode by remember { mutableStateOf(false) }
+
+    var raspberryIp by remember { mutableStateOf("192.168.1.50") }
+    var raspberryPollingEnabled by remember { mutableStateOf(false) }
+    var raspberryStatus by remember { mutableStateOf("Raspberry Pi polling disabled.") }
+    var lastEventId by remember { mutableStateOf("") }
 
     var items by remember { mutableStateOf(listOf<ProductItem>()) }
     var archive by remember { mutableStateOf(listOf<ArchivedTransaction>()) }
@@ -213,9 +251,13 @@ fun WeightingCashierApp(
     var weightText by remember { mutableStateOf("") }
     var priceText by remember { mutableStateOf("") }
     var warningText by remember { mutableStateOf<String?>(null) }
-    var rfidStatus by remember { mutableStateOf("Read a scale tag first, then read product tags.") }
+
+    var rfidStatus by remember {
+        mutableStateOf("Read a scale tag first, then read product tags.")
+    }
 
     val total = items.sumOf { it.totalPrice }
+
     val screenScrollState = rememberScrollState()
     val shoppingListState = rememberLazyListState()
     val archiveListState = rememberLazyListState()
@@ -223,9 +265,13 @@ fun WeightingCashierApp(
     LaunchedEffect(selectedScale, readProductMode, readScaleMode) {
         onRegisterNfcCallbacks(
             { tagText ->
+
                 when {
+
                     readScaleMode -> {
+
                         when (tagText) {
+
                             "SCALE_1" -> {
                                 selectedScale = "Scale 1"
                                 rfidStatus = "Selected Scale 1."
@@ -245,26 +291,32 @@ fun WeightingCashierApp(
                     }
 
                     readProductMode -> {
+
                         val product = productDatabase.find {
-                            it.tagCode == tagText || it.name.uppercase() == tagText
+                            it.tagCode == tagText
                         }
 
                         if (product != null) {
+
                             items = items + ProductItem(
+                                productId = product.tagCode,
                                 name = product.name,
                                 weightKg = product.defaultWeightKg,
-                                pricePerKg = product.pricePerKg,
+                                pricePerKg = product.defaultPricePerKg,
                                 scale = selectedScale
                             )
+
                             rfidStatus = "Added ${product.name} from $selectedScale."
                             readProductMode = false
+
                         } else {
                             rfidStatus = "Unknown product tag: $tagText"
                         }
                     }
 
                     else -> {
-                        rfidStatus = "Tag read: $tagText. Press Read Scale or Read Product first."
+                        rfidStatus =
+                            "Tag read: $tagText. Press Read Scale or Read Product first."
                     }
                 }
             },
@@ -274,17 +326,76 @@ fun WeightingCashierApp(
         )
     }
 
+    LaunchedEffect(
+        raspberryPollingEnabled,
+        selectedScale,
+        raspberryIp,
+        lastEventId
+    ) {
+
+        while (raspberryPollingEnabled) {
+
+            val scaleId = selectedScale.toScaleId()
+
+            val endpoint =
+                "http://$raspberryIp:5000/latest?scaleId=$scaleId"
+
+            val result = fetchLatestItem(endpoint)
+
+            if (result != null) {
+
+                if (
+                    result.eventId != lastEventId &&
+                    result.scaleId == scaleId
+                ) {
+
+                    val translatedName =
+                        productIdToName(result.productId)
+
+                    items = items + ProductItem(
+                        productId = result.productId,
+                        name = translatedName,
+                        weightKg = result.weightKg,
+                        pricePerKg = result.pricePerKg,
+                        scale = result.scaleId.toScaleDisplayName()
+                    )
+
+                    lastEventId = result.eventId
+
+                    raspberryStatus =
+                        "Received $translatedName from Raspberry Pi."
+
+                } else {
+                    raspberryStatus =
+                        "Waiting for new Raspberry Pi data..."
+                }
+
+            } else {
+                raspberryStatus = "No response from Raspberry Pi."
+            }
+
+            delay(1000)
+        }
+    }
+
     MaterialTheme {
+
         Scaffold(
             topBar = {
-                TopAppBar(title = { Text("Weighting Cashier") })
+                TopAppBar(
+                    title = {
+                        Text("Weighting Cashier - $loggedUser")
+                    }
+                )
             }
         ) { padding ->
+
             Box(
                 modifier = Modifier
                     .padding(padding)
                     .fillMaxSize()
             ) {
+
                 Column(
                     modifier = Modifier
                         .verticalScroll(screenScrollState)
@@ -293,26 +404,35 @@ fun WeightingCashierApp(
                         .fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+
                     Text(
                         text = "Current station: $selectedScale",
                         style = MaterialTheme.typography.titleMedium
                     )
 
                     Card(modifier = Modifier.fillMaxWidth()) {
+
                         Column(
                             modifier = Modifier.padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text("RFID / NFC Reader", style = MaterialTheme.typography.titleMedium)
+
+                            Text(
+                                "RFID / NFC Reader",
+                                style = MaterialTheme.typography.titleMedium
+                            )
 
                             Text(rfidStatus)
 
                             if (!hasNfc) {
+
                                 Text(
                                     "This device does not support NFC.",
                                     color = MaterialTheme.colorScheme.error
                                 )
+
                             } else if (!isNfcEnabled) {
+
                                 Text(
                                     "NFC is disabled.",
                                     color = MaterialTheme.colorScheme.error
@@ -321,13 +441,20 @@ fun WeightingCashierApp(
                                 Button(onClick = onOpenNfcSettings) {
                                     Text("Open NFC Settings")
                                 }
+
                             } else {
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+
+                                Row(
+                                    horizontalArrangement =
+                                        Arrangement.spacedBy(8.dp)
+                                ) {
+
                                     Button(
                                         onClick = {
                                             readScaleMode = true
                                             readProductMode = false
-                                            rfidStatus = "Waiting for scale tag: SCALE_1 or SCALE_2..."
+                                            rfidStatus =
+                                                "Waiting for scale tag..."
                                         },
                                         modifier = Modifier.weight(1f)
                                     ) {
@@ -338,7 +465,8 @@ fun WeightingCashierApp(
                                         onClick = {
                                             readProductMode = true
                                             readScaleMode = false
-                                            rfidStatus = "Waiting for product RFID/NFC tag..."
+                                            rfidStatus =
+                                                "Waiting for product tag..."
                                         },
                                         modifier = Modifier.weight(1f)
                                     ) {
@@ -350,34 +478,43 @@ fun WeightingCashierApp(
                     }
 
                     OutlinedButton(
-                        onClick = { developerMode = !developerMode },
+                        onClick = {
+                            developerMode = !developerMode
+                        },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            if (developerMode) {
+                            if (developerMode)
                                 "Developer Mode: ON"
-                            } else {
+                            else
                                 "Developer Mode: OFF"
-                            }
                         )
                     }
 
                     if (developerMode) {
+
                         Card(modifier = Modifier.fillMaxWidth()) {
+
                             Column(
                                 modifier = Modifier.padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                verticalArrangement =
+                                    Arrangement.spacedBy(8.dp)
                             ) {
+
                                 Text(
                                     "Developer Tools",
-                                    style = MaterialTheme.typography.titleMedium
+                                    style =
+                                        MaterialTheme.typography.titleMedium
                                 )
 
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    horizontalArrangement =
+                                        Arrangement.spacedBy(8.dp)
+                                ) {
+
                                     Button(
                                         onClick = {
                                             selectedScale = "Scale 1"
-                                            rfidStatus = "Developer selected Scale 1."
                                         }
                                     ) {
                                         Text("Mock Scale 1")
@@ -386,7 +523,6 @@ fun WeightingCashierApp(
                                     Button(
                                         onClick = {
                                             selectedScale = "Scale 2"
-                                            rfidStatus = "Developer selected Scale 2."
                                         }
                                     ) {
                                         Text("Mock Scale 2")
@@ -395,64 +531,81 @@ fun WeightingCashierApp(
 
                                 OutlinedTextField(
                                     value = productName,
-                                    onValueChange = { productName = it },
-                                    label = { Text("Product name") },
+                                    onValueChange = {
+                                        productName = it
+                                    },
+                                    label = {
+                                        Text("Product name")
+                                    },
                                     modifier = Modifier.fillMaxWidth()
                                 )
 
                                 OutlinedTextField(
                                     value = weightText,
                                     onValueChange = {
-                                        weightText = it.filterNumericDecimal()
-                                        warningText = null
+                                        weightText =
+                                            it.filterNumericDecimal()
                                     },
-                                    label = { Text("Weight (kg)") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                    isError = weightText.isNotBlank() && weightText.toDecimalOrNull() == null,
+                                    label = {
+                                        Text("Weight (kg)")
+                                    },
+                                    keyboardOptions =
+                                        KeyboardOptions(
+                                            keyboardType =
+                                                KeyboardType.Decimal
+                                        ),
                                     modifier = Modifier.fillMaxWidth()
                                 )
 
                                 OutlinedTextField(
                                     value = priceText,
                                     onValueChange = {
-                                        priceText = it.filterNumericDecimal()
-                                        warningText = null
+                                        priceText =
+                                            it.filterNumericDecimal()
                                     },
-                                    label = { Text("Price per kg (€)") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                    isError = priceText.isNotBlank() && priceText.toDecimalOrNull() == null,
+                                    label = {
+                                        Text("Price per kg (€)")
+                                    },
+                                    keyboardOptions =
+                                        KeyboardOptions(
+                                            keyboardType =
+                                                KeyboardType.Decimal
+                                        ),
                                     modifier = Modifier.fillMaxWidth()
                                 )
 
-                                warningText?.let {
-                                    Text(
-                                        text = it,
-                                        color = MaterialTheme.colorScheme.error
-                                    )
-                                }
+                                Row(
+                                    horizontalArrangement =
+                                        Arrangement.spacedBy(8.dp)
+                                ) {
 
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Button(
                                         onClick = {
-                                            val weight = weightText.toDecimalOrNull()
-                                            val price = priceText.toDecimalOrNull()
 
-                                            when {
-                                                productName.isBlank() -> warningText = "Please enter a product name."
-                                                weight == null -> warningText = "Please enter a valid numeric weight."
-                                                price == null -> warningText = "Please enter a valid numeric price."
-                                                else -> {
-                                                    items = items + ProductItem(
-                                                        name = productName.trim(),
-                                                        weightKg = weight,
-                                                        pricePerKg = price,
-                                                        scale = selectedScale
-                                                    )
-                                                    productName = ""
-                                                    weightText = ""
-                                                    priceText = ""
-                                                    warningText = null
-                                                }
+                                            val weight =
+                                                weightText.toDecimalOrNull()
+
+                                            val price =
+                                                priceText.toDecimalOrNull()
+
+                                            if (
+                                                productName.isNotBlank() &&
+                                                weight != null &&
+                                                price != null
+                                            ) {
+
+                                                items = items + ProductItem(
+                                                    productId =
+                                                        "MANUAL_PRODUCT",
+                                                    name = productName,
+                                                    weightKg = weight,
+                                                    pricePerKg = price,
+                                                    scale = selectedScale
+                                                )
+
+                                                productName = ""
+                                                weightText = ""
+                                                priceText = ""
                                             }
                                         }
                                     ) {
@@ -461,7 +614,11 @@ fun WeightingCashierApp(
 
                                     Button(
                                         onClick = {
-                                            items = items + generateRandomProduct(selectedScale)
+                                            items =
+                                                items +
+                                                        generateRandomProduct(
+                                                            selectedScale
+                                                        )
                                         }
                                     ) {
                                         Text("Quick Add")
@@ -469,18 +626,59 @@ fun WeightingCashierApp(
 
                                     Button(
                                         onClick = {
-                                            val mockProduct = productDatabase.random()
+
+                                            val mock =
+                                                productDatabase.random()
+
                                             items = items + ProductItem(
-                                                name = mockProduct.name,
-                                                weightKg = Random.nextDouble(0.20, 3.00).roundTo2Decimals(),
-                                                pricePerKg = mockProduct.pricePerKg,
+                                                productId = mock.tagCode,
+                                                name = mock.name,
+                                                weightKg =
+                                                    Random.nextDouble(
+                                                        0.20,
+                                                        3.00
+                                                    ).roundTo2Decimals(),
+                                                pricePerKg =
+                                                    mock.defaultPricePerKg,
                                                 scale = selectedScale
                                             )
-                                            rfidStatus = "Mock Raspberry update received."
+
+                                            rfidStatus =
+                                                "Mock Raspberry update received."
                                         }
                                     ) {
                                         Text("Mock Pi")
                                     }
+                                }
+
+                                Divider()
+
+                                OutlinedTextField(
+                                    value = raspberryIp,
+                                    onValueChange = {
+                                        raspberryIp = it
+                                    },
+                                    label = {
+                                        Text("Raspberry Pi IP")
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                Text(raspberryStatus)
+
+                                OutlinedButton(
+                                    onClick = {
+                                        raspberryPollingEnabled =
+                                            !raspberryPollingEnabled
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        if (raspberryPollingEnabled)
+                                            "Stop Raspberry Polling"
+                                        else
+                                            "Start Raspberry Polling"
+                                    )
                                 }
                             }
                         }
@@ -496,15 +694,19 @@ fun WeightingCashierApp(
                             .fillMaxWidth()
                             .height(260.dp)
                     ) {
+
                         Box(modifier = Modifier.fillMaxSize()) {
+
                             LazyColumn(
                                 state = shoppingListState,
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .padding(12.dp)
                                     .padding(end = 10.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                verticalArrangement =
+                                    Arrangement.spacedBy(8.dp)
                             ) {
+
                                 if (items.isEmpty()) {
                                     item {
                                         Text("No products added yet.")
@@ -512,9 +714,12 @@ fun WeightingCashierApp(
                                 }
 
                                 items(items) { item ->
+
                                     ProductRow(
                                         item = item,
-                                        onRemove = { items = items - item }
+                                        onRemove = {
+                                            items = items - item
+                                        }
                                     )
                                 }
                             }
@@ -524,7 +729,10 @@ fun WeightingCashierApp(
                                 modifier = Modifier
                                     .align(Alignment.CenterEnd)
                                     .fillMaxHeight()
-                                    .padding(vertical = 8.dp, horizontal = 4.dp)
+                                    .padding(
+                                        vertical = 8.dp,
+                                        horizontal = 4.dp
+                                    )
                             )
                         }
                     }
@@ -536,12 +744,15 @@ fun WeightingCashierApp(
 
                     Button(
                         onClick = {
+
                             if (items.isNotEmpty()) {
+
                                 archive = archive + ArchivedTransaction(
                                     timestamp = currentTimestamp(),
                                     items = items,
                                     total = total
                                 )
+
                                 items = emptyList()
                             }
                         },
@@ -550,57 +761,12 @@ fun WeightingCashierApp(
                         Text("Archive / Checkout Current List")
                     }
 
-                    Text("Archived Transactions", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Archived Transactions",
+                        style = MaterialTheme.typography.titleMedium
+                    )
 
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(160.dp)
-                    ) {
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            LazyColumn(
-                                state = archiveListState,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(12.dp)
-                                    .padding(end = 10.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                if (archive.isEmpty()) {
-                                    item {
-                                        Text("No archived transactions yet.")
-                                    }
-                                }
-
-                                items(archive.reversed()) { transaction ->
-                                    Card(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        onClick = { selectedArchive = transaction }
-                                    ) {
-                                        Column(modifier = Modifier.padding(10.dp)) {
-                                            Text(
-                                                transaction.timestamp,
-                                                style = MaterialTheme.typography.titleSmall
-                                            )
-                                            Text(
-                                                "${transaction.items.size} items — €${transaction.total.money()}"
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            LazyScrollbar(
-                                state = archiveListState,
-                                modifier = Modifier
-                                    .align(Alignment.CenterEnd)
-                                    .fillMaxHeight()
-                                    .padding(vertical = 8.dp, horizontal = 4.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(20.dp))
                 }
 
                 AppScrollbar(
@@ -612,51 +778,95 @@ fun WeightingCashierApp(
                         .padding(vertical = 8.dp, horizontal = 4.dp)
                 )
             }
+        }
+    }
+}
 
-            selectedArchive?.let { transaction ->
-                AlertDialog(
-                    onDismissRequest = { selectedArchive = null },
-                    confirmButton = {
-                        TextButton(onClick = { selectedArchive = null }) {
-                            Text("Close")
-                        }
-                    },
-                    title = {
-                        Text("Archived Transaction")
-                    },
-                    text = {
-                        LazyColumn(
-                            modifier = Modifier.heightIn(max = 400.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            item {
-                                Text("Date: ${transaction.timestamp}")
-                            }
+@Composable
+fun LoginScreen(
+    onLoginSuccess: (String) -> Unit
+) {
 
-                            items(transaction.items) { item ->
-                                Card(modifier = Modifier.fillMaxWidth()) {
-                                    Column(modifier = Modifier.padding(8.dp)) {
-                                        Text(
-                                            item.name,
-                                            style = MaterialTheme.typography.titleMedium
-                                        )
-                                        Text("Source: ${item.scale}")
-                                        Text("${item.weightKg.money()} kg × €${item.pricePerKg.money()}/kg")
-                                        Text("Total: €${item.totalPrice.money()}")
-                                    }
-                                }
-                            }
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
 
-                            item {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    "Final Total: €${transaction.total.money()}",
-                                    style = MaterialTheme.typography.titleMedium
-                                )
-                            }
-                        }
+    MaterialTheme {
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(12.dp)
+                ) {
+
+                    Text(
+                        "Weighting Cashier Login",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+
+                    OutlinedTextField(
+                        value = username,
+                        onValueChange = {
+                            username = it
+                            error = null
+                        },
+                        label = {
+                            Text("Username")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = {
+                            password = it
+                            error = null
+                        },
+                        label = {
+                            Text("Password")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    error?.let {
+                        Text(
+                            text = it,
+                            color = MaterialTheme.colorScheme.error
+                        )
                     }
-                )
+
+                    Button(
+                        onClick = {
+
+                            if (mockLogin(username, password)) {
+                                onLoginSuccess(username)
+                            } else {
+                                error =
+                                    "Invalid username or password."
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Login")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            onLoginSuccess("debug-user")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Debug Auto Login")
+                    }
+                }
             }
         }
     }
@@ -667,15 +877,25 @@ fun ProductRow(
     item: ProductItem,
     onRemove: () -> Unit
 ) {
+
     Card(modifier = Modifier.fillMaxWidth()) {
+
         Row(
             modifier = Modifier
                 .padding(10.dp)
                 .fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement =
+                Arrangement.SpaceBetween
         ) {
+
             Column(modifier = Modifier.weight(1f)) {
-                Text(item.name, style = MaterialTheme.typography.titleMedium)
+
+                Text(
+                    item.name,
+                    style = MaterialTheme.typography.titleMedium
+                )
+
+                Text("Product ID: ${item.productId}")
                 Text("Source: ${item.scale}")
                 Text("Weight: ${item.weightKg.money()} kg")
                 Text("Price/kg: €${item.pricePerKg.money()}")
@@ -689,11 +909,156 @@ fun ProductRow(
     }
 }
 
+fun mockLogin(
+    username: String,
+    password: String
+): Boolean {
+
+    val accounts = mapOf(
+        "admin" to "admin",
+        "igor" to "1234",
+        "cashier" to "cashier"
+    )
+
+    return accounts[username.trim()] == password
+}
+
+suspend fun fetchLatestItem(
+    endpoint: String
+): RaspberryItem? {
+
+    return withContext(Dispatchers.IO) {
+
+        try {
+
+            val connection =
+                URL(endpoint).openConnection() as HttpURLConnection
+
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 1500
+            connection.readTimeout = 1500
+
+            if (connection.responseCode != 200) {
+                connection.disconnect()
+                return@withContext null
+            }
+
+            val response =
+                connection.inputStream.bufferedReader().readText()
+
+            connection.disconnect()
+
+            val json = JSONObject(response)
+
+            RaspberryItem(
+                eventId = json.getString("eventId"),
+                scaleId = json.getString("scaleId"),
+                productId = json.getString("productId"),
+                weightKg = json.getDouble("weightKg"),
+                pricePerKg = json.getDouble("pricePerKg")
+            )
+
+        } catch (_: Exception) {
+            null
+        }
+    }
+}
+
+fun generateRandomProduct(
+    scale: String
+): ProductItem {
+
+    val product = productDatabase.random()
+
+    return ProductItem(
+        productId = product.tagCode,
+        name = product.name,
+        weightKg =
+            Random.nextDouble(0.20, 3.00).roundTo2Decimals(),
+        pricePerKg = product.defaultPricePerKg,
+        scale = scale
+    )
+}
+
+fun productIdToName(productId: String): String {
+    return productDatabase.find {
+        it.tagCode == productId
+    }?.name ?: productId
+}
+
+fun String.toScaleId(): String {
+    return when (this) {
+        "Scale 1" -> "SCALE_1"
+        "Scale 2" -> "SCALE_2"
+        else -> "SCALE_1"
+    }
+}
+
+fun String.toScaleDisplayName(): String {
+    return when (this) {
+        "SCALE_1" -> "Scale 1"
+        "SCALE_2" -> "Scale 2"
+        else -> this
+    }
+}
+
+fun Double.roundTo2Decimals(): Double {
+    return String.format(
+        Locale.US,
+        "%.2f",
+        this
+    ).toDouble()
+}
+
+fun Double.money(): String {
+    return String.format(
+        Locale.US,
+        "%.2f",
+        this
+    )
+}
+
+fun currentTimestamp(): String {
+    return SimpleDateFormat(
+        "yyyy-MM-dd HH:mm",
+        Locale.getDefault()
+    ).format(Date())
+}
+
+fun String.toDecimalOrNull(): Double? {
+    return this.replace(",", ".").toDoubleOrNull()
+}
+
+fun String.filterNumericDecimal(): String {
+
+    val normalized = this.replace(",", ".")
+    val builder = StringBuilder()
+    var hasDecimal = false
+
+    for (char in normalized) {
+
+        when {
+
+            char.isDigit() -> {
+                builder.append(char)
+            }
+
+            char == '.' && !hasDecimal -> {
+                builder.append(char)
+                hasDecimal = true
+            }
+        }
+    }
+
+    return builder.toString()
+}
+
 @Composable
 fun LazyScrollbar(
     state: LazyListState,
     modifier: Modifier = Modifier
 ) {
+
     val layoutInfo = state.layoutInfo
     val totalItems = layoutInfo.totalItemsCount
     val visibleItems = layoutInfo.visibleItemsInfo.size
@@ -701,8 +1066,13 @@ fun LazyScrollbar(
     if (totalItems <= visibleItems || totalItems == 0) return
 
     val firstVisibleItem = state.firstVisibleItemIndex
-    val scrollRatio = firstVisibleItem.toFloat() / max(1, totalItems - visibleItems).toFloat()
-    val thumbHeightRatio = visibleItems.toFloat() / totalItems.toFloat()
+
+    val scrollRatio =
+        firstVisibleItem.toFloat() /
+                max(1, totalItems - visibleItems).toFloat()
+
+    val thumbHeightRatio =
+        visibleItems.toFloat() / totalItems.toFloat()
 
     Box(
         modifier = modifier
@@ -712,10 +1082,13 @@ fun LazyScrollbar(
                 shape = RoundedCornerShape(100)
             )
     ) {
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(thumbHeightRatio.coerceIn(0.15f, 1f))
+                .fillMaxHeight(
+                    thumbHeightRatio.coerceIn(0.15f, 1f)
+                )
                 .align(Alignment.TopCenter)
                 .offset(y = (220.dp * scrollRatio))
                 .background(
@@ -732,9 +1105,11 @@ fun AppScrollbar(
     maxValue: Int,
     modifier: Modifier = Modifier
 ) {
+
     if (maxValue <= 0) return
 
-    val scrollRatio = currentValue.toFloat() / maxValue.toFloat()
+    val scrollRatio =
+        currentValue.toFloat() / maxValue.toFloat()
 
     Box(
         modifier = modifier
@@ -744,6 +1119,7 @@ fun AppScrollbar(
                 shape = RoundedCornerShape(100)
             )
     ) {
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -756,49 +1132,4 @@ fun AppScrollbar(
                 )
         )
     }
-}
-
-fun generateRandomProduct(scale: String): ProductItem {
-    val product = productDatabase.random()
-
-    return ProductItem(
-        name = product.name,
-        weightKg = Random.nextDouble(0.20, 3.00).roundTo2Decimals(),
-        pricePerKg = product.pricePerKg,
-        scale = scale
-    )
-}
-
-fun Double.roundTo2Decimals(): Double {
-    return String.format(Locale.US, "%.2f", this).toDouble()
-}
-
-fun Double.money(): String {
-    return String.format(Locale.US, "%.2f", this)
-}
-
-fun currentTimestamp(): String {
-    return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
-}
-
-fun String.toDecimalOrNull(): Double? {
-    return this.replace(",", ".").toDoubleOrNull()
-}
-
-fun String.filterNumericDecimal(): String {
-    val normalized = this.replace(",", ".")
-    val builder = StringBuilder()
-    var hasDecimal = false
-
-    for (char in normalized) {
-        when {
-            char.isDigit() -> builder.append(char)
-            char == '.' && !hasDecimal -> {
-                builder.append(char)
-                hasDecimal = true
-            }
-        }
-    }
-
-    return builder.toString()
 }
