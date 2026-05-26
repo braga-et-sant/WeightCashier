@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SGE System - Operations Control Hub</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f1f5f9; color: #0f172a; }
+        .navbar { background: #0f172a !important; }
+        .panel-container { background: #ffffff; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03); border: 1px solid #e2e8f0; }
+        .nav-tabs .nav-link { border: none; color: #64748b; font-weight: 500; padding: 1rem 1.5rem; transition: all 0.2s; }
+        .nav-tabs .nav-link.active { color: #2563eb; border-bottom: 3px solid #2563eb; background: none; font-weight: 600; }
+        .table th { background-color: #f8fafc; color: #475569; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px; }
+        .btn-action { padding: 0.35rem 0.75rem; font-size: 0.85rem; font-weight: 500; border-radius: 6px; }
+    </style>
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark mb-4">
+    <div class="container-fluid px-4">
+        <a class="navbar-brand" href="#">⚙️ CORE ADMINISTRATION CONTROL</a>
+        <div class="navbar-nav ms-auto">
+            <a class="nav-link" href="/">Live Terminal Monitor</a>
+            <a class="nav-link active" href="/admin">Control Center</a>
+        </div>
+    </div>
+</nav>
+
+<div class="container-fluid px-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2 class="fw-bold tracking-tight">System Infrastructure Hub</h2>
+        <div class="bg-dark text-white p-3 rounded-3 shadow-sm fw-bold fs-5">Accumulated Gross Revenue: <span class="text-success">${{ "%.2f"|format(revenue) }} €</span></div>
+    </div>
+
+    <div id="rfid-hw-alert" class="alert alert-warning d-none shadow-sm align-items-center d-flex justify-content-between" role="alert">
+        <div>🔒 <strong>Hardware Sniffer Alert:</strong> Unregistered product tag <code id="unknown-tag" class="mx-1"></code> pinged at <span id="source-scale" class="fw-semibold"></span>.</div>
+        <button class="btn btn-sm btn-dark" onclick="catchHardwareTag()">Bind Asset</button>
+    </div>
+
+    <div class="panel-container p-4">
+        <ul class="nav nav-tabs mb-4" id="controlHubTabs" role="tablist">
+            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#panel-products">📦 Inventory Catalog</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#panel-customers">👥 CRM Customer Management</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#panel-scales">⚖️ Registered Scales (IoT)</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#panel-history">🗄️ Master Sales Logs</button></li>
+        </ul>
+
+        <div class="tab-content">
+            
+            <div class="tab-pane fade show active" id="panel-products">
+                <h5 class="fw-bold mb-3 text-secondary">Provision Product Record</h5>
+                <form action="/admin/product/save" method="POST" class="row g-3 mb-4">
+                    <div class="col-md-2"><input type="text" name="rfid" id="prod-rfid" class="form-control" placeholder="RFID Tag UID" required></div>
+                    <div class="col-md-3"><input type="text" name="name" id="prod-name" class="form-control" placeholder="Product Label Descriptor" required></div>
+                    <div class="col-md-3">
+                        <select name="type" id="prod-type" class="form-select">
+                            <option value="bulk">⚖️ Bulk Measurement Pricing (per Kg)</option>
+                            <option value="unit">📦 Unitary Fixed Pricing (per Item)</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2"><input type="number" step="0.01" name="price" id="prod-price" class="form-control" placeholder="Base Price (€)" required></div>
+                    <div class="col-md-2"><button type="submit" class="btn btn-success w-100 fw-semibold">Save Product</button></div>
+                </form>
+                
+                <table class="table table-hover border align-middle text-center mt-2">
+                    <thead><tr><th>RFID Secure Code</th><th>Product Name</th><th>Billing Mode</th><th>Base Rate</th><th>Management Actions</th></tr></thead>
+                    <tbody>
+                        {% for p in products %}
+                        <tr>
+                            <td><code>{{ p[0] }}</code></td><td>{{ p[1] }}</td>
+                            <td><span class="badge {% if p[3]=='bulk' %}bg-info text-dark{% else %}bg-secondary{% endif %}">{{ p[3]|upper }}</span></td>
+                            <td><strong>{{ "%.2f"|format(p[2]) }} €</strong> <small class="text-muted">/{% if p[3]=='bulk' %}Kg{% else %}Un{% endif %}</small></td>
+                            <td>
+                                <button class="btn btn-warning btn-action me-1" onclick="loadProductEdit('{{p[0]}}','{{p[1]}}',{{p[2]}},'{{p[3]}}')">Edit</button>
+                                <a href="/admin/product/delete/{{ p[0] }}" class="btn btn-danger btn-action" onclick="return confirm('Confirm deletion?')">Delete</a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="tab-pane fade" id="panel-customers">
+                <h5 class="fw-bold mb-3 text-secondary">Provision Customer Profile</h5>
+                <form action="/admin/customer/save" method="POST" class="row g-3 mb-4">
+                    <div class="col-md-2"><input type="text" name="nif" id="cust-nif" class="form-control" placeholder="NIF Tax Code" required></div>
+                    <div class="col-md-4"><input type="text" name="name" id="cust-name" class="form-control" placeholder="Full Legal Name" required></div>
+                    <div class="col-md-4"><input type="email" name="email" id="cust-email" class="form-control" placeholder="Corporate/Personal Email" required></div>
+                    <div class="col-md-1"><input type="text" name="pin" id="cust-pin" class="form-control" placeholder="PIN" required></div>
+                    <div class="col-md-1"><button type="submit" class="btn btn-primary w-100 fw-semibold">Save</button></div>
+                </form>
+                
+                <table class="table table-hover border align-middle text-center">
+                    <thead><tr><th>NIF Tax ID</th><th>Customer Identifier</th><th>Email Account</th><th>Application Key (PIN)</th><th>Management Actions</th></tr></thead>
+                    <tbody>
+                        {% for c in customers %}
+                        <tr>
+                            <td><code>{{ c[0] }}</code></td><td>{{ c[1] }}</td><td>{{ c[2] }}</td><td><code>{{ c[3] }}</code></td>
+                            <td>
+                                <button class="btn btn-warning btn-action me-1" onclick="document.getElementById('cust-nif').value='{{c[0]}}';document.getElementById('cust-name').value='{{c[1]}}';document.getElementById('cust-email').value='{{c[2]}}';document.getElementById('cust-pin').value='{{c[3]}}';">Modify</button>
+                                <a href="/admin/customer/delete/{{ c[0] }}" class="btn btn-danger btn-action">Purge</a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="tab-pane fade" id="panel-scales">
+                <h5 class="fw-bold mb-3 text-secondary">Map Hardware Nodes</h5>
+                <form action="/admin/scale/save" method="POST" class="row g-3 mb-4">
+                    <div class="col-md-2"><input type="text" name="scale_id" class="form-control" placeholder="Scale System ID" required></div>
+                    <div class="col-md-4"><input type="text" name="location" class="form-control" placeholder="Physical Operational Zone" required></div>
+                    <div class="col-md-3"><input type="text" name="ip_address" class="form-control" placeholder="Static LAN IP Address" required></div>
+                    <div class="col-md-2"><input type="text" name="rfid_tag" class="form-control" placeholder="Hardware Pairing Token" required></div>
+                    <div class="col-md-1"><button type="submit" class="btn btn-dark w-100 fw-semibold">Bind</button></div>
+                </form>
+                
+                <table class="table table-hover border align-middle text-center">
+                    <thead><tr><th>Node Index Reference</th><th>Location Context</th><th>Local IP Destination</th><th>NFC/RFID Interlock Tag</th><th>Status Management</th></tr></thead>
+                    <tbody>
+                        {% for b in scales %}
+                        <tr><td><code>{{ b[0] }}</code></td><td>{{ b[1] }}</td><td><code>{{ b[2] }}</code></td><td><span class="badge bg-secondary">{{ b[3] }}</span></td><td><a href="/admin/scale/delete/{{ b[0] }}" class="btn btn-danger btn-action">Decommission</a></td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="tab-pane fade" id="panel-history">
+                <h5 class="fw-bold mb-3 text-secondary">Historical Invoicing Master Logs</h5>
+                <table class="table table-striped table-bordered align-middle text-center">
+                    <thead><tr><th>Timestamp UTC</th><th>Taxpayer NIF</th><th>Customer Name</th><th>Hardware Node Source</th><th>Acquired Line Item</th><th>Logged Net Weight</th><th>Net Settled Amount</th></tr></thead>
+                    <tbody>
+                        {% for h in history %}
+                        <tr><td><small class="text-muted">${{ h[6] }}</small></td><td><code>{{ h[0] }}</code></td><td>{{ h[1] }}</td><td>{{ h[2] }}</td><td>{{ h[3] }}</td><td>{{ h[4]|int }} g</td><td class="text-success fw-bold">{{ "%.2f"|format(h[5]) }} €</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    const socket = io();
+    socket.on('unknown_rfid_event', (data) => {
+        document.getElementById('unknown-tag').innerText = data.rfid;
+        document.getElementById('source-scale').innerText = data.scale_id;
+        document.getElementById('rfid-hw-alert').classList.replace('d-none', 'd-flex');
+    });
+
+    function catchHardwareTag() {
+        document.getElementById('prod-rfid').value = document.getElementById('unknown-tag').innerText;
+        document.getElementById('prod-name').focus();
+        document.getElementById('rfid-hw-alert').classList.replace('d-flex', 'd-none');
+    }
+
+    function loadProductEdit(rfid, name, price, type) {
+        document.getElementById('prod-rfid').value = rfid;
+        document.getElementById('prod-name').value = name;
+        document.getElementById('prod-price').value = price;
+        document.getElementById('prod-type').value = type;
+        window.scrollTo({top: 0, behavior: 'smooth'});
+    }
+</script>
+</body>
+</html>
