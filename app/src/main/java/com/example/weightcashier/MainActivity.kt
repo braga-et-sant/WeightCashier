@@ -42,6 +42,8 @@ import android.util.Log
 const val LOG_TAG = "WeightCashierPi"
 const val RASPBERRY_PORT = 5000
 
+const val DEFAULT_RASPBERRY_ENDPOINT = "/supermarket/scale/1/reading"
+
 const val DEFAULT_RASPBERRY_IP = "192.168.0.2"
 data class ProductItem(
     val productId: String,
@@ -67,7 +69,7 @@ data class ProductDefinition(
     val defaultWeightKg: Double
 )
 
-const val DEFAULT_RASPBERRY_ENDPOINT = "/events"
+
 
 val productDatabase = listOf(
     ProductDefinition("PROD_BANANA", "Banana", 1.79, 0.85),
@@ -1071,7 +1073,7 @@ suspend fun fetchRawJson(endpoint: String): String? {
 
             response
         } catch (e: Exception) {
-            Log.e(LOG_TAG, "Error fetching raw JSON from $endpoint", e)
+            //Log.e(LOG_TAG, "Error fetching raw JSON from $endpoint", e)
             null
         }
     }
