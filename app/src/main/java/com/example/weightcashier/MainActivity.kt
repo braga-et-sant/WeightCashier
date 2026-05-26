@@ -37,7 +37,12 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.max
 import kotlin.random.Random
+import android.util.Log
 
+const val LOG_TAG = "WeightCashierPi"
+const val RASPBERRY_PORT = 5000
+
+const val DEFAULT_RASPBERRY_IP = "192.168.0.2"
 data class ProductItem(
     val productId: String,
     val name: String,
@@ -62,13 +67,7 @@ data class ProductDefinition(
     val defaultWeightKg: Double
 )
 
-data class RaspberryItem(
-    val eventId: String,
-    val scaleId: String,
-    val productId: String,
-    val weightKg: Double,
-    val pricePerKg: Double
-)
+const val DEFAULT_RASPBERRY_ENDPOINT = "/events"
 
 val productDatabase = listOf(
     ProductDefinition("PROD_BANANA", "Banana", 1.79, 0.85),
@@ -238,10 +237,11 @@ fun WeightingCashierApp(
     var readProductMode by remember { mutableStateOf(false) }
     var readScaleMode by remember { mutableStateOf(false) }
 
-    var raspberryIp by remember { mutableStateOf("192.168.1.50") }
+    var raspberryIp by remember { mutableStateOf(DEFAULT_RASPBERRY_IP) }
+    var raspberryPortText by remember { mutableStateOf(RASPBERRY_PORT.toString()) }
+    var raspberryEndpointPath by remember { mutableStateOf(DEFAULT_RASPBERRY_ENDPOINT) }
     var raspberryPollingEnabled by remember { mutableStateOf(false) }
     var raspberryStatus by remember { mutableStateOf("Raspberry Pi polling disabled.") }
-    var lastEventId by remember { mutableStateOf("") }
 
     var items by remember { mutableStateOf(listOf<ProductItem>()) }
     var archive by remember { mutableStateOf(listOf<ArchivedTransaction>()) }
@@ -328,50 +328,36 @@ fun WeightingCashierApp(
 
     LaunchedEffect(
         raspberryPollingEnabled,
-        selectedScale,
         raspberryIp,
-        lastEventId
+        raspberryPortText,
+        raspberryEndpointPath
     ) {
-
         while (raspberryPollingEnabled) {
+            val port = raspberryPortText.toIntOrNull()
 
-            val scaleId = selectedScale.toScaleId()
+            if (port == null || port !in 1..65535) {
+                raspberryStatus = "Invalid Raspberry Pi port."
+                Log.d(LOG_TAG, "Invalid Raspberry Pi port: $raspberryPortText")
+                delay(1000)
+                continue
+            }
 
-            val endpoint =
-                "http://$raspberryIp:5000/latest?scaleId=$scaleId"
-
-            val result = fetchLatestItem(endpoint)
-
-            if (result != null) {
-
-                if (
-                    result.eventId != lastEventId &&
-                    result.scaleId == scaleId
-                ) {
-
-                    val translatedName =
-                        productIdToName(result.productId)
-
-                    items = items + ProductItem(
-                        productId = result.productId,
-                        name = translatedName,
-                        weightKg = result.weightKg,
-                        pricePerKg = result.pricePerKg,
-                        scale = result.scaleId.toScaleDisplayName()
-                    )
-
-                    lastEventId = result.eventId
-
-                    raspberryStatus =
-                        "Received $translatedName from Raspberry Pi."
-
+            val cleanEndpointPath =
+                if (raspberryEndpointPath.startsWith("/")) {
+                    raspberryEndpointPath
                 } else {
-                    raspberryStatus =
-                        "Waiting for new Raspberry Pi data..."
+                    "/$raspberryEndpointPath"
                 }
 
+            val endpoint = "http://$raspberryIp:$port$cleanEndpointPath"
+            val rawJson = fetchRawJson(endpoint)
+
+            if (rawJson != null) {
+                Log.d(LOG_TAG, "Raspberry endpoint response from $endpoint: $rawJson")
+                raspberryStatus = "Logged Raspberry response to Logcat."
             } else {
-                raspberryStatus = "No response from Raspberry Pi."
+                Log.d(LOG_TAG, "No response from Raspberry endpoint: $endpoint")
+                raspberryStatus = "No response from Raspberry endpoint."
             }
 
             delay(1000)
@@ -664,12 +650,62 @@ fun WeightingCashierApp(
                                     modifier = Modifier.fillMaxWidth()
                                 )
 
+                                OutlinedTextField(
+                                    value = raspberryPortText,
+                                    onValueChange = {
+                                        raspberryPortText =
+                                            it.filter { character ->
+                                                character.isDigit()
+                                            }.take(5)
+                                    },
+                                    label = {
+                                        Text("Raspberry Pi Port")
+                                    },
+                                    keyboardOptions =
+                                        KeyboardOptions(
+                                            keyboardType =
+                                                KeyboardType.Number
+                                        ),
+                                    isError =
+                                        raspberryPortText.toIntOrNull()
+                                            ?.let { port ->
+                                                port !in 1..65535
+                                            } ?: true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                OutlinedTextField(
+                                    value = raspberryEndpointPath,
+                                    onValueChange = {
+                                        raspberryEndpointPath = it
+                                    },
+                                    label = {
+                                        Text("Raspberry Endpoint Path")
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
                                 Text(raspberryStatus)
 
                                 OutlinedButton(
                                     onClick = {
-                                        raspberryPollingEnabled =
-                                            !raspberryPollingEnabled
+                                        raspberryPollingEnabled = !raspberryPollingEnabled
+
+                                        val cleanEndpointPath =
+                                            if (raspberryEndpointPath.startsWith("/")) {
+                                                raspberryEndpointPath
+                                            } else {
+                                                "/$raspberryEndpointPath"
+                                            }
+
+                                        if (raspberryPollingEnabled) {
+                                            Log.d(
+                                                LOG_TAG,
+                                                "Raspberry polling started. Target: http://$raspberryIp:$raspberryPortText$cleanEndpointPath"
+                                            )
+                                        } else {
+                                            Log.d(LOG_TAG, "Raspberry polling stopped.")
+                                        }
                                     },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
@@ -766,6 +802,54 @@ fun WeightingCashierApp(
                         style = MaterialTheme.typography.titleMedium
                     )
 
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(160.dp)
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            LazyColumn(
+                                state = archiveListState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(12.dp)
+                                    .padding(end = 10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (archive.isEmpty()) {
+                                    item {
+                                        Text("No archived transactions yet.")
+                                    }
+                                }
+
+                                items(archive.reversed()) { transaction ->
+                                    Card(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        onClick = { selectedArchive = transaction }
+                                    ) {
+                                        Column(modifier = Modifier.padding(10.dp)) {
+                                            Text(
+                                                transaction.timestamp,
+                                                style = MaterialTheme.typography.titleSmall
+                                            )
+                                            Text(
+                                                "${transaction.items.size} items — €${transaction.total.money()}"
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            LazyScrollbar(
+                                state = archiveListState,
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .fillMaxHeight()
+                                    .padding(vertical = 8.dp, horizontal = 4.dp)
+                            )
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(20.dp))
                 }
 
@@ -778,6 +862,52 @@ fun WeightingCashierApp(
                         .padding(vertical = 8.dp, horizontal = 4.dp)
                 )
             }
+            selectedArchive?.let { transaction ->
+                AlertDialog(
+                    onDismissRequest = { selectedArchive = null },
+                    confirmButton = {
+                        TextButton(onClick = { selectedArchive = null }) {
+                            Text("Close")
+                        }
+                    },
+                    title = {
+                        Text("Archived Transaction")
+                    },
+                    text = {
+                        LazyColumn(
+                            modifier = Modifier.heightIn(max = 400.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            item {
+                                Text("Date: ${transaction.timestamp}")
+                            }
+
+                            items(transaction.items) { item ->
+                                Card(modifier = Modifier.fillMaxWidth()) {
+                                    Column(modifier = Modifier.padding(8.dp)) {
+                                        Text(
+                                            item.name,
+                                            style = MaterialTheme.typography.titleMedium
+                                        )
+                                        Text("Product ID: ${item.productId}")
+                                        Text("Source: ${item.scale}")
+                                        Text("${item.weightKg.money()} kg × €${item.pricePerKg.money()}/kg")
+                                        Text("Total: €${item.totalPrice.money()}")
+                                    }
+                                }
+                            }
+
+                            item {
+                                Text(
+                                    "Final Total: €${transaction.total.money()}",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                            }
+                        }
+                    }
+                )
+            }
+
         }
     }
 }
@@ -923,17 +1053,10 @@ fun mockLogin(
     return accounts[username.trim()] == password
 }
 
-suspend fun fetchLatestItem(
-    endpoint: String
-): RaspberryItem? {
-
+suspend fun fetchRawJson(endpoint: String): String? {
     return withContext(Dispatchers.IO) {
-
         try {
-
-            val connection =
-                URL(endpoint).openConnection() as HttpURLConnection
-
+            val connection = URL(endpoint).openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
             connection.connectTimeout = 1500
             connection.readTimeout = 1500
@@ -943,22 +1066,12 @@ suspend fun fetchLatestItem(
                 return@withContext null
             }
 
-            val response =
-                connection.inputStream.bufferedReader().readText()
-
+            val response = connection.inputStream.bufferedReader().readText()
             connection.disconnect()
 
-            val json = JSONObject(response)
-
-            RaspberryItem(
-                eventId = json.getString("eventId"),
-                scaleId = json.getString("scaleId"),
-                productId = json.getString("productId"),
-                weightKg = json.getDouble("weightKg"),
-                pricePerKg = json.getDouble("pricePerKg")
-            )
-
-        } catch (_: Exception) {
+            response
+        } catch (e: Exception) {
+            Log.e(LOG_TAG, "Error fetching raw JSON from $endpoint", e)
             null
         }
     }
@@ -978,28 +1091,6 @@ fun generateRandomProduct(
         pricePerKg = product.defaultPricePerKg,
         scale = scale
     )
-}
-
-fun productIdToName(productId: String): String {
-    return productDatabase.find {
-        it.tagCode == productId
-    }?.name ?: productId
-}
-
-fun String.toScaleId(): String {
-    return when (this) {
-        "Scale 1" -> "SCALE_1"
-        "Scale 2" -> "SCALE_2"
-        else -> "SCALE_1"
-    }
-}
-
-fun String.toScaleDisplayName(): String {
-    return when (this) {
-        "SCALE_1" -> "Scale 1"
-        "SCALE_2" -> "Scale 2"
-        else -> this
-    }
 }
 
 fun Double.roundTo2Decimals(): Double {
