@@ -2,78 +2,324 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>SGE System - Operations Control Hub</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script src="/socket.io/socket.io.js"></script>
+    <title>QuickCart - Admin Console</title>
+    
+    <link href="{{ url_for('static', filename='css/bootstrap.min.css') }}" rel="stylesheet">
+    
+    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+    
     <style>
-        body { font-family: 'Inter', sans-serif; background-color: #f1f5f9; color: #0f172a; }
-        .navbar { background: #0f172a !important; }
-        .panel-container { background: #ffffff; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03); border: 1px solid #e2e8f0; }
-        .nav-tabs .nav-link { border: none; color: #64748b; font-weight: 500; padding: 1rem 1.5rem; transition: all 0.2s; }
-        .nav-tabs .nav-link.active { color: #2563eb; border-bottom: 3px solid #2563eb; background: none; font-weight: 600; }
-        .table th { background-color: #f8fafc; color: #475569; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px; }
-        .btn-action { padding: 0.35rem 0.75rem; font-size: 0.85rem; font-weight: 500; border-radius: 6px; }
+        :root {
+            --ink: #0b1020;
+            --ink-muted: #5a6476;
+            --panel: #ffffff;
+            --line: #d7e0ea;
+            --accent: #409938;
+            --accent-2: #2d742a;
+            --bg-1: #f4f7fb;
+            --bg-2: #eef2f7;
+            --gold: #c59a5b;
+            --font-display: "Aptos Display", "Segoe UI Variable Display", "Segoe UI", "Trebuchet MS", sans-serif;
+            --font-body: "Aptos", "Segoe UI Variable Text", "Segoe UI", "Trebuchet MS", sans-serif;
+        }
+
+        body {
+            font-family: var(--font-body);
+            background:
+                radial-gradient(900px 600px at 10% -10%, #d6eef3 0%, transparent 55%),
+                radial-gradient(700px 500px at 90% 0%, #f6efe4 0%, transparent 52%),
+                linear-gradient(180deg, var(--bg-1), var(--bg-2));
+            color: var(--ink);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .page-content {
+            flex: 1 0 auto;
+        }
+
+        .site-footer {
+            margin-top: auto;
+            padding: 2rem 0;
+            color: rgba(255, 255, 255, 0.92);
+            background:
+                linear-gradient(90deg, rgba(11, 16, 32, 0.92), rgba(11, 16, 32, 0.68)),
+                url("{{ url_for('static', filename='shopping-carts.jpg') }}");
+            background-size: cover;
+            background-position: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.12);
+        }
+
+        .site-footer .footer-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .site-footer small {
+            color: rgba(255, 255, 255, 0.78);
+        }
+
+        .navbar-brand {
+            font-family: var(--font-display);
+            font-weight: 700;
+            letter-spacing: 0.6px;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .navbar {
+            background: #ffffff !important;
+            box-shadow: 0 10px 26px rgba(7, 10, 18, 0.08);
+            border-bottom: 1px solid rgba(11, 16, 32, 0.08);
+            padding-top: 0.85rem;
+            padding-bottom: 0.85rem;
+        }
+
+        .navbar .nav-link {
+            color: rgba(11, 16, 32, 0.82) !important;
+        }
+
+        .navbar .nav-link:hover {
+            color: rgba(11, 16, 32, 1) !important;
+        }
+
+        .navbar .nav-link.active {
+            color: var(--accent) !important;
+            font-weight: 700;
+        }
+
+        .brand-logo {
+            height: 48px;
+            width: auto;
+            display: block;
+            filter: none;
+        }
+
+        @media (max-width: 768px) {
+            .navbar {
+                padding-top: 0.6rem;
+                padding-bottom: 0.6rem;
+            }
+
+            .brand-logo {
+                height: 40px;
+            }
+        }
+
+        .btn-primary {
+            background-color: var(--accent);
+            border-color: var(--accent);
+        }
+
+        .btn-primary:hover {
+            background-color: var(--accent-2);
+            border-color: var(--accent-2);
+        }
+
+        .btn-success {
+            background-color: var(--accent);
+            border-color: var(--accent);
+        }
+
+        .btn-success:hover {
+            background-color: var(--accent-2);
+            border-color: var(--accent-2);
+        }
+
+        .nav-link {
+            font-weight: 500;
+            letter-spacing: 0.2px;
+        }
+
+        .panel-container {
+            background: var(--panel);
+            border-radius: 16px;
+            box-shadow: 0 18px 40px rgba(9, 12, 22, 0.12);
+            border: 1px solid var(--line);
+        }
+
+        .heading {
+            font-family: var(--font-display);
+            letter-spacing: 0.4px;
+        }
+
+        .nav-tabs .nav-link {
+            border: none;
+            color: var(--ink-muted);
+            font-weight: 500;
+            padding: 1rem 1.5rem;
+            transition: all 0.2s;
+        }
+
+        .nav-tabs .nav-link.active {
+            color: var(--accent-2);
+            border-bottom: 3px solid var(--accent);
+            background: none;
+            font-weight: 600;
+        }
+
+        .table th {
+            background-color: #f8fafc;
+            color: #475569;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.5px;
+        }
+
+        .btn-action {
+            padding: 0.35rem 0.75rem;
+            font-size: 0.85rem;
+            font-weight: 500;
+            border-radius: 10px;
+        }
+
+        .revenue-pill {
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            color: #ecfeff;
+            border-radius: 14px;
+            padding: 0.85rem 1.5rem;
+            box-shadow: 0 12px 28px rgba(9, 12, 22, 0.2);
+            font-weight: 600;
+        }
+
+        .form-control, .form-select {
+            border-radius: 12px;
+            border-color: #d4dce7;
+        }
+
+        .form-control:focus, .form-select:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 0.2rem rgba(21, 94, 117, 0.15);
+        }
+
+        .table {
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        #table-history td:first-child {
+            white-space: nowrap;
+        }
+
+        .alert {
+            border-radius: 14px;
+        }
     </style>
 </head>
 <body>
 
-<nav class="navbar navbar-expand-lg navbar-dark mb-4">
+<nav class="navbar navbar-expand-lg navbar-light mb-4">
     <div class="container-fluid px-4">
-        <a class="navbar-brand" href="#">⚙️ CORE ADMINISTRATION CONTROL</a>
+        <a class="navbar-brand" href="/" aria-label="Home">
+            <img class="brand-logo" src="{{ url_for('static', filename='web_logo.png') }}" alt="QuickCart logo">
+        </a>
         <div class="navbar-nav ms-auto">
-            <a class="nav-link" href="/">Live Terminal Monitor</a>
-            <a class="nav-link active" href="/admin">Control Center</a>
+            <a class="nav-link" href="/">Live Monitor</a>
+            <a class="nav-link active" href="/admin">Admin Console</a>
         </div>
     </div>
 </nav>
 
-<div class="container-fluid px-4">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h2 class="fw-bold tracking-tight">System Infrastructure Hub</h2>
-        <div class="bg-dark text-white p-3 rounded-3 shadow-sm fw-bold fs-5">Accumulated Gross Revenue: <span class="text-success">${{ "%.2f"|format(revenue) }} €</span></div>
+<div class="container-fluid px-4 page-content">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+        <div>
+            <h2 class="fw-bold heading">Admin Console</h2>
+            <p class="text-muted mb-0">Operational control for inventory, customers, scale nodes, and historical logs.</p>
+        </div>
     </div>
 
     <div id="rfid-hw-alert" class="alert alert-warning d-none shadow-sm align-items-center d-flex justify-content-between" role="alert">
-        <div>🔒 <strong>Hardware Sniffer Alert:</strong> Unregistered product tag <code id="unknown-tag" class="mx-1"></code> pinged at <span id="source-scale" class="fw-semibold"></span>.</div>
+        <div><strong>Hardware Alert:</strong> Unregistered product tag <code id="unknown-tag" class="mx-1"></code> detected at <span id="source-scale" class="fw-semibold"></span>.</div>
         <button class="btn btn-sm btn-dark" onclick="catchHardwareTag()">Bind Asset</button>
+    </div>
+
+    <div class="panel-container p-4 mb-4">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <div>
+                <h5 class="fw-bold mb-0 text-secondary">Recent Alerts</h5>
+                <p class="text-muted mb-0">Last {{ recent_errors|length }} warnings/errors captured by the server runtime.</p>
+            </div>
+            <a class="btn btn-sm btn-outline-dark" href="/health" target="_blank" rel="noopener">Open /health</a>
+        </div>
+
+        {% if recent_errors and recent_errors|length > 0 %}
+        <div class="table-responsive">
+            <table class="table table-sm table-hover border align-middle mb-0">
+                <thead>
+                <tr>
+                    <th style="min-width: 170px;">Timestamp</th>
+                    <th style="min-width: 90px;">Level</th>
+                    <th>Message</th>
+                    <th style="min-width: 120px;">Scale</th>
+                    <th style="min-width: 120px;">NIF</th>
+                    <th style="min-width: 140px;">RFID</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for e in recent_errors %}
+                <tr class="{% if e.get('level') == 'error' %}table-danger{% elif e.get('level') in ['warn','warning'] %}table-warning{% endif %}">
+                    <td><small class="text-muted">{{ e.get('ts', '') }}</small></td>
+                    <td>
+                        <span class="badge {% if e.get('level') == 'error' %}bg-danger{% elif e.get('level') in ['warn','warning'] %}bg-warning text-dark{% else %}bg-secondary{% endif %}">
+                            {{ e.get('level', 'info')|upper }}
+                        </span>
+                    </td>
+                    <td>{{ e.get('message', '') }}</td>
+                    <td><code>{{ e.get('scale_id', '') }}</code></td>
+                    <td><code>{{ e.get('nif', '') }}</code></td>
+                    <td><code>{{ e.get('rfid', '') }}</code></td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-muted">No alerts recorded in this runtime session.</div>
+        {% endif %}
     </div>
 
     <div class="panel-container p-4">
         <ul class="nav nav-tabs mb-4" id="controlHubTabs" role="tablist">
-            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#panel-products">📦 Inventory Catalog</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#panel-customers">👥 CRM Customer Management</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#panel-scales">⚖️ Registered Scales (IoT)</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#panel-history">🗄️ Master Sales Logs</button></li>
+            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#panel-products">Inventory</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#panel-customers">Customers</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#panel-scales">Scales</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#panel-history">History</button></li>
         </ul>
 
         <div class="tab-content">
             
             <div class="tab-pane fade show active" id="panel-products">
-                <h5 class="fw-bold mb-3 text-secondary">Provision Product Record</h5>
+                <h5 class="fw-bold mb-3 text-secondary">Product Catalog</h5>
+                <input type="text" class="form-control mb-3" id="filter-products" placeholder="Filter products...">
                 <form action="/admin/product/save" method="POST" class="row g-3 mb-4">
                     <div class="col-md-2"><input type="text" name="rfid" id="prod-rfid" class="form-control" placeholder="RFID Tag UID" required></div>
                     <div class="col-md-3"><input type="text" name="name" id="prod-name" class="form-control" placeholder="Product Label Descriptor" required></div>
                     <div class="col-md-3">
                         <select name="type" id="prod-type" class="form-select">
-                            <option value="bulk">⚖️ Bulk Measurement Pricing (per Kg)</option>
-                            <option value="unit">📦 Unitary Fixed Pricing (per Item)</option>
+                            <option value="bulk">Bulk Measurement Pricing (per Kg)</option>
+                            <option value="unit">Unitary Fixed Pricing (per Item)</option>
                         </select>
                     </div>
                     <div class="col-md-2"><input type="number" step="0.01" name="price" id="prod-price" class="form-control" placeholder="Base Price (€)" required></div>
                     <div class="col-md-2"><button type="submit" class="btn btn-success w-100 fw-semibold">Save Product</button></div>
                 </form>
                 
-                <table class="table table-hover border align-middle text-center mt-2">
-                    <thead><tr><th>RFID Secure Code</th><th>Product Name</th><th>Billing Mode</th><th>Base Rate</th><th>Management Actions</th></tr></thead>
+                <table class="table table-hover border align-middle text-center mt-2" id="table-products">
+                    <thead><tr><th>RFID Secure Code</th><th>Product Name</th><th>Unit</th><th>Base Rate</th><th>Management Actions</th></tr></thead>
                     <tbody>
                         {% for p in products %}
-                        <tr>
+                        <tr data-filter="{{ p[0] }} {{ p[1] }} {{ p[3] }}">
                             <td><code>{{ p[0] }}</code></td><td>{{ p[1] }}</td>
-                            <td><span class="badge {% if p[3]=='bulk' %}bg-info text-dark{% else %}bg-secondary{% endif %}">{{ p[3]|upper }}</span></td>
-                            <td><strong>{{ "%.2f"|format(p[2]) }} €</strong> <small class="text-muted">/{% if p[3]=='bulk' %}Kg{% else %}Un{% endif %}</small></td>
+                            <td><span class="badge {% if p[3]=='kg' %}bg-info text-dark{% else %}bg-secondary{% endif %}">{{ p[3]|upper }}</span></td>
+                            <td><strong>{{ "%.2f"|format(p[2] / 100) }} EUR</strong> <small class="text-muted">/{% if p[3]=='kg' %}Kg{% else %}Un{% endif %}</small></td>
                             <td>
-                                <button class="btn btn-warning btn-action me-1" onclick="loadProductEdit('{{p[0]}}','{{p[1]}}',{{p[2]}},'{{p[3]}}')">Edit</button>
+                                <button class="btn btn-warning btn-action me-1" onclick="loadProductEdit('{{p[0]}}','{{p[1]}}',{{(p[2] / 100) | round(2)}},'{{'bulk' if p[3]=='kg' else 'unit'}}')">Edit</button>
                                 <a href="/admin/product/delete/{{ p[0] }}" class="btn btn-danger btn-action" onclick="return confirm('Confirm deletion?')">Delete</a>
                             </td>
                         </tr>
@@ -83,7 +329,8 @@
             </div>
 
             <div class="tab-pane fade" id="panel-customers">
-                <h5 class="fw-bold mb-3 text-secondary">Provision Customer Profile</h5>
+                <h5 class="fw-bold mb-3 text-secondary">Customer Profiles</h5>
+                <input type="text" class="form-control mb-3" id="filter-customers" placeholder="Filter customers...">
                 <form action="/admin/customer/save" method="POST" class="row g-3 mb-4">
                     <div class="col-md-2"><input type="text" name="nif" id="cust-nif" class="form-control" placeholder="NIF Tax Code" required></div>
                     <div class="col-md-4"><input type="text" name="name" id="cust-name" class="form-control" placeholder="Full Legal Name" required></div>
@@ -92,11 +339,11 @@
                     <div class="col-md-1"><button type="submit" class="btn btn-primary w-100 fw-semibold">Save</button></div>
                 </form>
                 
-                <table class="table table-hover border align-middle text-center">
+                <table class="table table-hover border align-middle text-center" id="table-customers">
                     <thead><tr><th>NIF Tax ID</th><th>Customer Identifier</th><th>Email Account</th><th>Application Key (PIN)</th><th>Management Actions</th></tr></thead>
                     <tbody>
                         {% for c in customers %}
-                        <tr>
+                        <tr data-filter="{{ c[0] }} {{ c[1] }} {{ c[2] }}">
                             <td><code>{{ c[0] }}</code></td><td>{{ c[1] }}</td><td>{{ c[2] }}</td><td><code>{{ c[3] }}</code></td>
                             <td>
                                 <button class="btn btn-warning btn-action me-1" onclick="document.getElementById('cust-nif').value='{{c[0]}}';document.getElementById('cust-name').value='{{c[1]}}';document.getElementById('cust-email').value='{{c[2]}}';document.getElementById('cust-pin').value='{{c[3]}}';">Modify</button>
@@ -109,7 +356,8 @@
             </div>
 
             <div class="tab-pane fade" id="panel-scales">
-                <h5 class="fw-bold mb-3 text-secondary">Map Hardware Nodes</h5>
+                <h5 class="fw-bold mb-3 text-secondary">Hardware Nodes</h5>
+                <input type="text" class="form-control mb-3" id="filter-scales" placeholder="Filter scales...">
                 <form action="/admin/scale/save" method="POST" class="row g-3 mb-4">
                     <div class="col-md-2"><input type="text" name="scale_id" class="form-control" placeholder="Scale System ID" required></div>
                     <div class="col-md-4"><input type="text" name="location" class="form-control" placeholder="Physical Operational Zone" required></div>
@@ -118,23 +366,39 @@
                     <div class="col-md-1"><button type="submit" class="btn btn-dark w-100 fw-semibold">Bind</button></div>
                 </form>
                 
-                <table class="table table-hover border align-middle text-center">
-                    <thead><tr><th>Node Index Reference</th><th>Location Context</th><th>Local IP Destination</th><th>NFC/RFID Interlock Tag</th><th>Status Management</th></tr></thead>
+                <table class="table table-hover border align-middle text-center" id="table-scales">
+                    <thead><tr><th>Node Index Reference</th><th>Location Context</th><th>Local IP Destination</th><th>NFC/RFID Interlock Tag</th><th>Live Status</th><th>Status Management</th></tr></thead>
                     <tbody>
                         {% for b in scales %}
-                        <tr><td><code>{{ b[0] }}</code></td><td>{{ b[1] }}</td><td><code>{{ b[2] }}</code></td><td><span class="badge bg-secondary">{{ b[3] }}</span></td><td><a href="/admin/scale/delete/{{ b[0] }}" class="btn btn-danger btn-action">Decommission</a></td></tr>
+                        <tr data-scale-id="{{ b[0] }}" data-filter="{{ b[0] }} {{ b[1] }} {{ b[2] }} {{ b[3] }}">
+                            <td><code>{{ b[0] }}</code></td>
+                            <td>{{ b[1] }}</td>
+                            <td><code>{{ b[2] }}</code></td>
+                            <td><span class="badge bg-secondary">{{ b[3] }}</span></td>
+                            <td><span class="badge bg-secondary" data-status="{{ b[0] }}">idle</span></td>
+                            <td><a href="/admin/scale/delete/{{ b[0] }}" class="btn btn-danger btn-action">Decommission</a></td>
+                        </tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
 
             <div class="tab-pane fade" id="panel-history">
-                <h5 class="fw-bold mb-3 text-secondary">Historical Invoicing Master Logs</h5>
-                <table class="table table-striped table-bordered align-middle text-center">
+                <h5 class="fw-bold mb-3 text-secondary">Historical Logs</h5>
+                <input type="text" class="form-control mb-3" id="filter-history" placeholder="Filter history...">
+                <table class="table table-hover border align-middle text-center" id="table-history">
                     <thead><tr><th>Timestamp UTC</th><th>Taxpayer NIF</th><th>Customer Name</th><th>Hardware Node Source</th><th>Acquired Line Item</th><th>Logged Net Weight</th><th>Net Settled Amount</th></tr></thead>
                     <tbody>
                         {% for h in history %}
-                        <tr><td><small class="text-muted">${{ h[6] }}</small></td><td><code>{{ h[0] }}</code></td><td>{{ h[1] }}</td><td>{{ h[2] }}</td><td>{{ h[3] }}</td><td>{{ h[4]|int }} g</td><td class="text-success fw-bold">{{ "%.2f"|format(h[5]) }} €</td></tr>
+                        <tr data-filter="{{ h[6] }} {{ h[0] }} {{ h[1] }} {{ h[2] }} {{ h[3] }}">
+                            <td><small class="text-muted">{{ h[6] }}</small></td>
+                            <td><code>{{ h[0] }}</code></td>
+                            <td>{{ h[1] }}</td>
+                            <td>{{ h[2] }}</td>
+                            <td>{{ h[3] }}</td>
+                            <td>{{ h[4]|int }} g</td>
+                            <td class="text-success fw-bold">{{ "%.2f"|format(h[5] / 100) }} EUR</td>
+                        </tr>
                         {% endfor %}
                     </tbody>
                 </table>
@@ -144,7 +408,7 @@
     </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/bootstrap.bundle.min.js') }}"></script>
 <script>
     const socket = io();
     socket.on('unknown_rfid_event', (data) => {
@@ -166,6 +430,49 @@
         document.getElementById('prod-type').value = type;
         window.scrollTo({top: 0, behavior: 'smooth'});
     }
+
+    socket.on('status_update', (data) => {
+        if (!Array.isArray(data)) return;
+        data.forEach(scale => {
+            const badge = document.querySelector(`[data-status="${scale.scale_id}"]`);
+            if (!badge) return;
+            badge.classList.remove('bg-secondary', 'bg-success', 'bg-warning');
+            if (scale.health === 'live') {
+                badge.classList.add('bg-success');
+            } else if (scale.health === 'stale') {
+                badge.classList.add('bg-warning');
+            } else {
+                badge.classList.add('bg-secondary');
+            }
+            badge.innerText = scale.health;
+        });
+    });
+
+    function setupFilter(inputId, tableId) {
+        const input = document.getElementById(inputId);
+        const table = document.getElementById(tableId);
+        if (!input || !table) return;
+
+        input.addEventListener('input', () => {
+            const value = input.value.trim().toLowerCase();
+            table.querySelectorAll('tbody tr').forEach(row => {
+                const haystack = (row.dataset.filter || '').toLowerCase();
+                row.style.display = haystack.includes(value) ? '' : 'none';
+            });
+        });
+    }
+
+    setupFilter('filter-products', 'table-products');
+    setupFilter('filter-customers', 'table-customers');
+    setupFilter('filter-scales', 'table-scales');
+    setupFilter('filter-history', 'table-history');
 </script>
+
+<footer class="site-footer">
+    <div class="container footer-inner">
+        <div class="fw-semibold">QuickCart</div>
+        <small>Admin console</small>
+    </div>
+</footer>
 </body>
 </html>

@@ -2,100 +2,643 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>SGE System - Live Overview Monitor</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
-    <script src="/socket.io/socket.io.js"></script>
+    <title>QuickCart - Live Monitor</title>
+    
+    <link href="{{ url_for('static', filename='css/bootstrap.min.css') }}" rel="stylesheet">
+    
+    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+    
     <style>
-        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; color: #1e293b; }
-        .navbar { background: #0f172a !important; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
-        .navbar-brand { font-weight: 700; letter-spacing: -0.5px; }
-        .page-title { font-weight: 700; color: #0f172a; margin-top: 2rem; margin-bottom: 2rem; }
-        .cart-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.05); transition: transform 0.2s ease, box-shadow 0.2s ease; }
-        .cart-card:hover { transform: translateY(-2px); box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1); }
-        .card-header { background: #3b82f6 !important; color: white; border-radius: 12px 12px 0 0 !important; font-weight: 600; }
+        :root {
+            --ink: #0b1020;
+            --ink-muted: #5a6476;
+            --panel: #ffffff;
+            --line: #d7e0ea;
+            --accent: #409938;
+            --accent-2: #2d742a;
+            --glow: rgba(64, 153, 56, 0.22);
+            --bg-1: #f4f7fb;
+            --bg-2: #eef2f7;
+            --gold: #c59a5b;
+            --font-display: "Aptos Display", "Segoe UI Variable Display", "Segoe UI", "Trebuchet MS", sans-serif;
+            --font-body: "Aptos", "Segoe UI Variable Text", "Segoe UI", "Trebuchet MS", sans-serif;
+        }
+
+        body {
+            font-family: var(--font-body);
+            background:
+                radial-gradient(900px 600px at 10% -10%, #d6eef3 0%, transparent 55%),
+                radial-gradient(700px 500px at 90% 0%, #f6efe4 0%, transparent 52%),
+                linear-gradient(180deg, var(--bg-1), var(--bg-2));
+            color: var(--ink);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .page-content {
+            flex: 1 0 auto;
+        }
+
+        .site-footer {
+            margin-top: auto;
+            padding: 2rem 0;
+            color: rgba(255, 255, 255, 0.92);
+            background:
+                linear-gradient(90deg, rgba(11, 16, 32, 0.92), rgba(11, 16, 32, 0.68)),
+                url("{{ url_for('static', filename='shopping-carts.jpg') }}");
+            background-size: cover;
+            background-position: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.12);
+        }
+
+        .site-footer .footer-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .site-footer small {
+            color: rgba(255, 255, 255, 0.78);
+        }
+
+        .navbar {
+            background: #ffffff !important;
+            box-shadow: 0 10px 26px rgba(7, 10, 18, 0.08);
+            border-bottom: 1px solid rgba(11, 16, 32, 0.08);
+            padding-top: 0.85rem;
+            padding-bottom: 0.85rem;
+        }
+
+        .navbar-brand {
+            font-family: var(--font-display);
+            font-weight: 700;
+            letter-spacing: 0.6px;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .navbar .nav-link {
+            color: rgba(11, 16, 32, 0.82) !important;
+        }
+
+        .navbar .nav-link:hover {
+            color: rgba(11, 16, 32, 1) !important;
+        }
+
+        .navbar .nav-link.active {
+            color: var(--accent) !important;
+            font-weight: 700;
+        }
+
+        .brand-logo {
+            height: 48px;
+            width: auto;
+            display: block;
+            filter: none;
+        }
+
+        @media (max-width: 768px) {
+            .navbar {
+                padding-top: 0.6rem;
+                padding-bottom: 0.6rem;
+            }
+
+            .brand-logo {
+                height: 40px;
+            }
+        }
+
+        .nav-link {
+            font-weight: 500;
+            letter-spacing: 0.2px;
+        }
+
+        .hero {
+            padding: 2.75rem 0 1.75rem;
+            position: relative;
+        }
+
+        .hero::after {
+            content: "";
+            position: absolute;
+            inset: 1.25rem 0 auto 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(11, 16, 32, 0.18), transparent);
+        }
+
+        .hero-title {
+            font-family: var(--font-display);
+            font-size: clamp(2.1rem, 3.8vw, 3.4rem);
+            letter-spacing: 0.5px;
+            margin: 0;
+        }
+
+        .hero-subtitle {
+            color: var(--ink-muted);
+            max-width: 640px;
+            margin-top: 0.75rem;
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: #0b1220;
+            color: #e8eef8;
+            padding: 0.5rem 1rem;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            font-size: 0.9rem;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ef4444;
+            box-shadow: 0 0 12px rgba(239, 68, 68, 0.6);
+        }
+
+        .status-live .status-dot {
+            background: #10b981;
+            box-shadow: 0 0 12px rgba(16, 185, 129, 0.6);
+        }
+
+        .panel-grid {
+            margin-top: 1.25rem;
+        }
+
+        .summary-bar {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin: 1.5rem 0;
+        }
+
+        .summary-card {
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 1.1rem 1.35rem;
+            box-shadow: 0 14px 32px rgba(9, 12, 22, 0.1);
+            transition: transform 0.25s ease, box-shadow 0.25s ease;
+        }
+
+        .summary-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 18px 36px rgba(9, 12, 22, 0.14);
+        }
+
+        .summary-label {
+            font-size: 0.8rem;
+            color: var(--ink-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        .summary-value {
+            font-size: 1.6rem;
+            font-weight: 700;
+            margin-top: 0.35rem;
+        }
+
+        .section-title {
+            font-family: var(--font-display);
+            font-size: 1.25rem;
+            margin-top: 2rem;
+        }
+
+        .scale-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1rem;
+        }
+
+        .scale-card {
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            padding: 1rem;
+            background: #ffffff;
+            box-shadow: 0 10px 24px rgba(9, 12, 22, 0.08);
+        }
+
+        .scale-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .status-chip {
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: #94a3b8;
+        }
+
+        .status-live .status-chip { background: #10b981; }
+        .status-stale .status-chip { background: #f59e0b; }
+        .status-idle .status-chip { background: #94a3b8; }
+
+        .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 1.25rem;
+        }
+
+        .toggle-group {
+            display: inline-flex;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            overflow: hidden;
+            background: #fff;
+        }
+
+        .toggle-group button {
+            border: none;
+            padding: 0.4rem 1rem;
+            background: transparent;
+            font-size: 0.85rem;
+        }
+
+        .toggle-group button.active {
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            color: #fff;
+        }
+
+        .timeline {
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 1rem;
+            background: #fff;
+            max-height: 280px;
+            overflow: auto;
+            box-shadow: 0 12px 30px rgba(9, 12, 22, 0.08);
+        }
+
+        .timeline-item {
+            display: grid;
+            grid-template-columns: 90px 1fr;
+            gap: 0.75rem;
+            padding: 0.5rem 0;
+            border-bottom: 1px dashed var(--line);
+        }
+
+        .timeline-item:last-child { border-bottom: none; }
+
+        .timeline-time {
+            font-size: 0.8rem;
+            color: var(--ink-muted);
+        }
+
+        .focus-ring:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
+        .cart-card {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            box-shadow: 0 18px 40px rgba(9, 12, 22, 0.12);
+            transition: transform 0.25s ease, box-shadow 0.25s ease;
+            overflow: hidden;
+            animation: rise 0.45s ease both;
+        }
+
+        .cart-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 28px 60px rgba(9, 12, 22, 0.18);
+        }
+
+        .card-header {
+            background: linear-gradient(135deg, var(--accent), var(--accent-2)) !important;
+            color: white;
+            border-radius: 0 !important;
+            font-weight: 600;
+            font-size: 0.95rem;
+            letter-spacing: 0.4px;
+        }
+
         .table { margin-bottom: 0; }
-        .table thead th { font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px; color: #64748b; }
-        .price-text { font-weight: 700; color: #10b981; }
-        .total-section { font-size: 1.25rem; font-weight: 700; color: #0f172a; }
-        .status-badge-container { position: absolute; top: 1.5rem; right: 1.5rem; }
+
+        .table thead th {
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.72rem;
+            letter-spacing: 0.5px;
+            color: var(--ink-muted);
+        }
+
+        .price-text {
+            font-weight: 700;
+            color: var(--accent);
+        }
+
+        .total-section {
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: var(--ink);
+        }
+
+        .empty-state {
+            border: 1px dashed var(--line);
+            border-radius: 16px;
+            padding: 2.5rem 2rem;
+            text-align: center;
+            color: var(--ink-muted);
+            background: rgba(255, 255, 255, 0.7);
+        }
+
+        @keyframes rise {
+            from { transform: translateY(10px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        @media (max-width: 768px) {
+            .hero { padding-top: 1.5rem; }
+        }
     </style>
 </head>
 <body>
 
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+<nav class="navbar navbar-expand-lg navbar-light">
     <div class="container-fluid px-4">
-        <a class="navbar-brand" href="#">🛒 SGE SMART ECOSYSTEM</a>
+        <a class="navbar-brand" href="/" aria-label="Home">
+            <img class="brand-logo" src="{{ url_for('static', filename='web_logo.png') }}" alt="QuickCart logo">
+        </a>
         <div class="navbar-nav ms-auto">
-            <a class="nav-link active" href="/">Live Terminal Monitor</a>
-            <a class="nav-link" href="/admin">Control Center</a>
+            <a class="nav-link active" href="/">Live Monitor</a>
+            <a class="nav-link" href="/admin">Admin Console</a>
         </div>
     </div>
 </nav>
 
-<div class="container position-relative py-4">
-    <div class="status-badge-container">
-        <span id="network-status" class="badge bg-danger p-2 fs-6">🔴 Disconnected</span>
+<div class="container py-4 page-content">
+    <div class="hero d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div>
+            <h2 class="hero-title">Live Floor Overview</h2>
+            <p class="hero-subtitle">Real-time carts, station activity, and pricing updates across all active cashiers.</p>
+        </div>
+        <div id="network-status" class="status-pill">
+            <span class="status-dot"></span>
+            <span>Disconnected</span>
+        </div>
     </div>
 
-    <h2 class="page-title text-center">Live Active Customer Shopping Carts</h2>
-    <div class="row g-4" id="monitor-grid"></div>
+    <div class="summary-bar">
+        <div class="summary-card">
+            <div class="summary-label">Active Customers</div>
+            <div id="stat-customers" class="summary-value">0</div>
+        </div>
+        <div class="summary-card">
+            <div class="summary-label">Items in Carts</div>
+            <div id="stat-items" class="summary-value">0</div>
+        </div>
+        <div class="summary-card">
+            <div class="summary-label">Live Total</div>
+            <div id="stat-total" class="summary-value">EUR 0.00</div>
+        </div>
+    </div>
+
+    <h3 class="section-title">Scale Status</h3>
+    <div id="scale-grid" class="scale-grid"></div>
+
+    <div class="toolbar">
+        <h3 class="section-title">Active Carts</h3>
+        <div class="toggle-group" role="tablist" aria-label="View mode">
+            <button id="view-by-customer" class="active" type="button">By Customer</button>
+            <button id="view-by-scale" type="button">By Scale</button>
+        </div>
+    </div>
+
+    <div class="row g-4 panel-grid" id="monitor-grid"></div>
+
+    <h3 class="section-title">Latest Reads</h3>
+    <div id="timeline" class="timeline"></div>
 </div>
 
 <script>
     const socket = io();
     const grid = document.getElementById('monitor-grid');
     const status = document.getElementById('network-status');
+    const scaleGrid = document.getElementById('scale-grid');
+    const timeline = document.getElementById('timeline');
+    const viewByCustomer = document.getElementById('view-by-customer');
+    const viewByScale = document.getElementById('view-by-scale');
+    const statCustomers = document.getElementById('stat-customers');
+    const statItems = document.getElementById('stat-items');
+    const statTotal = document.getElementById('stat-total');
+
+    let currentCarts = {};
+    let cartMeta = {};
+    let currentView = 'customer';
 
     socket.on('connect', () => {
-        status.className = "badge bg-success p-2 fs-6";
-        status.innerText = "🟢 System Live";
+        status.classList.add("status-live");
+        status.querySelector("span:last-child").innerText = "System Live";
     });
 
     socket.on('disconnect', () => {
-        status.className = "badge bg-danger p-2 fs-6";
-        status.innerText = "🔴 Disconnected";
+        status.classList.remove("status-live");
+        status.querySelector("span:last-child").innerText = "Disconnected";
     });
 
     socket.on('update_event', (data) => {
+        currentCarts = data || {};
+        renderCarts();
+    });
+
+    socket.on('cart_meta', (data) => {
+        cartMeta = data || {};
+        renderCarts();
+    });
+
+    socket.on('stats_update', (data) => {
+        if (!data) return;
+        statCustomers.innerText = data.active_customers ?? 0;
+        statItems.innerText = data.item_count ?? 0;
+        statTotal.innerText = `EUR ${(data.total_cents / 100).toFixed(2)}`;
+    });
+
+    socket.on('status_update', (data) => {
+        renderScaleStatus(data || []);
+    });
+
+    socket.on('reads_snapshot', (data) => {
+        renderReads(data || []);
+    });
+
+    socket.on('read_event', (data) => {
+        if (!data) return;
+        prependRead(data);
+    });
+
+    socket.on('unknown_rfid_event', (data) => {
+        if (!data) return;
+        showToast(`Unknown RFID ${data.rfid} on ${data.scale_id}`);
+    });
+
+    viewByCustomer.addEventListener('click', () => {
+        currentView = 'customer';
+        viewByCustomer.classList.add('active');
+        viewByScale.classList.remove('active');
+        renderCarts();
+    });
+
+    viewByScale.addEventListener('click', () => {
+        currentView = 'scale';
+        viewByScale.classList.add('active');
+        viewByCustomer.classList.remove('active');
+        renderCarts();
+    });
+
+    function renderCarts() {
         grid.innerHTML = '';
-        if (!data || Object.keys(data).length === 0) {
-            grid.innerHTML = '<div class="col-12 text-center text-muted py-5"><h5>No active weight scaling metrics detected on the floor.</h5><p class="small">Awaiting hardware inputs...</p></div>';
+        const cartEntries = Object.entries(currentCarts || {});
+        if (cartEntries.length === 0) {
+            grid.innerHTML = '<div class="col-12"><div class="empty-state"><h5>No active carts yet.</h5><p class="small">Waiting for the next scale reading. Checklist: MQTT broker live, scale online, Android assigned.</p></div></div>';
             return;
         }
 
-        for (const [customer, items] of Object.entries(data)) {
-            let totalSum = 0;
-            let rowsHtml = '';
-
-            items.forEach(item => {
-                rowsHtml += `
-                    <tr>
-                        <td><strong>${item.name}</strong><br><small class="text-muted">via ${item.scale}</small></td>
-                        <td class="text-center align-middle">${item.weight.toFixed(0)} g</td>
-                        <td class="text-end align-middle price-text">${item.price.toFixed(2)} €</td>
-                    </tr>`;
-                totalSum += item.price;
+        if (currentView === 'scale') {
+            const scaleMap = {};
+            cartEntries.forEach(([customer, items]) => {
+                items.forEach(item => {
+                    const scaleKey = item.scale || 'Unknown';
+                    if (!scaleMap[scaleKey]) scaleMap[scaleKey] = [];
+                    scaleMap[scaleKey].push({ ...item, customer });
+                });
             });
 
-            grid.innerHTML += `
-                <div class="col-md-6 col-lg-4">
-                    <div class="card cart-card">
-                        <div class="card-header py-3">👤 Client: ${customer}</div>
-                        <div class="card-body p-3">
-                            <table class="table table-sm table-borderless">
-                                <thead><tr><th>Item Details</th><th class="text-center">Weight</th><th class="text-end">Subtotal</th></tr></thead>
-                                <tbody>${rowsHtml}</tbody>
-                            </table>
-                            <div class="d-flex justify-content-between align-items-center mt-3 pt-2 border-top">
-                                <span class="text-muted small fw-semibold">Grand Total</span>
-                                <span class="total-section">${totalSum.toFixed(2)} €</span>
-                            </div>
+            Object.entries(scaleMap).forEach(([scale, items]) => {
+                renderCard(`Scale ${scale}`, items, true);
+            });
+        } else {
+            cartEntries.forEach(([customer, items]) => {
+                renderCard(`Client ${customer}`, items, false, cartMeta[customer]?.last_update);
+            });
+        }
+    }
+
+    function renderCard(title, items, showCustomer, lastUpdate) {
+        let totalSum = 0;
+        let rowsHtml = '';
+
+        items.forEach(item => {
+            rowsHtml += `
+                <tr>
+                    <td>
+                        <strong>${item.name}</strong>
+                        <br>
+                        <small class="text-muted">${showCustomer ? item.customer : `via ${item.scale}`}</small>
+                    </td>
+                    <td class="text-center align-middle">${item.weight.toFixed(0)} g</td>
+                    <td class="text-end align-middle price-text">${item.price.toFixed(2)} €</td>
+                </tr>`;
+            totalSum += item.price;
+        });
+
+        const updateLabel = lastUpdate ? `<div class="text-muted small">Last update: ${lastUpdate}</div>` : '';
+
+        grid.innerHTML += `
+            <div class="col-md-6 col-lg-4">
+                <div class="card cart-card">
+                    <div class="card-header py-3">${title}</div>
+                    <div class="card-body p-3">
+                        ${updateLabel}
+                        <table class="table table-sm table-borderless mt-2">
+                            <thead><tr><th>Item Details</th><th class="text-center">Weight</th><th class="text-end">Subtotal</th></tr></thead>
+                            <tbody>${rowsHtml}</tbody>
+                        </table>
+                        <div class="d-flex justify-content-between align-items-center mt-3 pt-2 border-top">
+                            <span class="text-muted small fw-semibold">Grand Total</span>
+                            <span class="total-section">${totalSum.toFixed(2)} €</span>
                         </div>
                     </div>
+                </div>
+            </div>`;
+    }
+
+    function renderScaleStatus(scales) {
+        if (!Array.isArray(scales)) return;
+        scaleGrid.innerHTML = scales.map(scale => {
+            const statusClass = `status-${scale.health}`;
+            const assigned = scale.assigned_nif ? `Assigned: ${scale.assigned_nif}` : 'Unassigned';
+            const lastRead = scale.last_reading ? `Last read: ${scale.last_reading}` : 'No reads yet';
+            return `
+                <div class="scale-card ${statusClass}">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div><strong>${scale.scale_id}</strong></div>
+                        <div class="scale-status ${statusClass}">
+                            <span class="status-chip"></span>
+                            <span>${scale.health}</span>
+                        </div>
+                    </div>
+                    <div class="small text-muted">${scale.location}</div>
+                    <div class="small">${assigned}</div>
+                    <div class="small text-muted">${lastRead}</div>
                 </div>`;
+        }).join('');
+    }
+
+    function renderReads(reads) {
+        timeline.innerHTML = '';
+        if (!Array.isArray(reads) || reads.length === 0) {
+            timeline.innerHTML = '<div class="text-muted small">No reads yet.</div>';
+            return;
         }
-    });
+        reads.forEach(item => prependRead(item, true));
+    }
+
+    function prependRead(item, initial = false) {
+        const time = item.created_at || new Date().toLocaleTimeString();
+        const product = item.product_name ? item.product_name : 'Unknown tag';
+        const html = `
+            <div class="timeline-item">
+                <div class="timeline-time">${time}</div>
+                <div>
+                    <div><strong>${product}</strong> on ${item.scale_id}</div>
+                    <div class="small text-muted">RFID ${item.rfid} • ${item.weight_grams} g</div>
+                </div>
+            </div>`;
+
+        if (initial) {
+            timeline.insertAdjacentHTML('beforeend', html);
+        } else {
+            timeline.insertAdjacentHTML('afterbegin', html);
+        }
+    }
+
+    function showToast(message) {
+        const toast = document.createElement('div');
+        toast.className = 'toast align-items-center text-bg-dark border-0 show mb-2';
+        toast.role = 'alert';
+        toast.innerHTML = `
+            <div class="d-flex">
+                <div class="toast-body">${message}</div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>`;
+        document.getElementById('toast-container').appendChild(toast);
+        setTimeout(() => toast.remove(), 6000);
+    }
 </script>
+
+<div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container"></div>
+
+<footer class="site-footer">
+    <div class="container footer-inner">
+        <div class="fw-semibold">QuickCart</div>
+        <small>Live monitor &middot; Admin console</small>
+    </div>
+</footer>
 </body>
 </html>

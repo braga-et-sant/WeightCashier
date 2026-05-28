@@ -7,7 +7,9 @@ import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.tech.Ndef
 import android.os.Bundle
+import android.os.Build
 import android.provider.Settings
+import androidx.compose.ui.platform.LocalContext
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -26,8 +28,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import io.socket.client.IO
+import io.socket.client.Socket
+import io.socket.emitter.Emitter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -36,24 +42,24 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.max
-import kotlin.random.Random
-import android.util.Log
+import com.example.weightcashier.ui.theme.WeightCashierTheme
+import android.content.Context
 
-const val LOG_TAG = "WeightCashierPi"
-const val RASPBERRY_PORT = 5000
+const val SERVER_PORT = 5000
+const val DEFAULT_SERVER_IP = "192.168.0.2"
 
-const val DEFAULT_RASPBERRY_ENDPOINT = "/supermarket/scale/1/reading"
-
-const val DEFAULT_RASPBERRY_IP = "192.168.0.2"
+private const val PREFS_NAME = "weightcashier_prefs"
+private const val PREF_SERVER_IP = "server_ip"
+private const val PREF_SERVER_PORT = "server_port"
+private const val PREF_LAST_NIF = "last_nif"
 data class ProductItem(
-    val productId: String,
     val name: String,
-    val weightKg: Double,
-    val pricePerKg: Double,
+    val weightGrams: Int,
+    val priceCents: Int,
     val scale: String
 ) {
-    val totalPrice: Double
-        get() = weightKg * pricePerKg
+    val weightKg: Double
+        get() = weightGrams / 1000.0
 }
 
 data class ArchivedTransaction(
@@ -62,27 +68,41 @@ data class ArchivedTransaction(
     val total: Double
 )
 
-data class ProductDefinition(
-    val tagCode: String,
-    val name: String,
-    val defaultPricePerKg: Double,
-    val defaultWeightKg: Double
+data class ScaleAssignResult(
+    val status: String,
+    val scaleId: String?,
+    val message: String?
 )
 
-
-
-val productDatabase = listOf(
-    ProductDefinition("PROD_BANANA", "Banana", 1.79, 0.85),
-    ProductDefinition("PROD_APPLE", "Apple", 2.49, 1.10),
-    ProductDefinition("PROD_ORANGE", "Orange", 1.99, 1.20),
-    ProductDefinition("PROD_PEAR", "Pear", 2.29, 0.95),
-    ProductDefinition("PROD_MANGO", "Mango", 3.99, 0.70),
-    ProductDefinition("PROD_PEACH", "Peach", 2.89, 0.60),
-    ProductDefinition("PROD_GRAPES", "Grapes", 4.49, 0.50),
-    ProductDefinition("PROD_STRAWBERRY", "Strawberry", 5.99, 0.35),
-    ProductDefinition("PROD_PINEAPPLE", "Pineapple", 2.79, 1.50),
-    ProductDefinition("PROD_WATERMELON", "Watermelon", 1.29, 2.80)
+data class ApiAuthResult(
+    val status: String,
+    val clientName: String?,
+    val token: String?,
+    val message: String?
 )
+
+private fun prefs(context: Context) = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+private fun getSavedServerIp(context: Context): String {
+    return prefs(context).getString(PREF_SERVER_IP, DEFAULT_SERVER_IP) ?: DEFAULT_SERVER_IP
+}
+
+private fun getSavedServerPort(context: Context): String {
+    return prefs(context).getString(PREF_SERVER_PORT, SERVER_PORT.toString()) ?: SERVER_PORT.toString()
+}
+
+private fun getSavedLastNif(context: Context): String {
+    return prefs(context).getString(PREF_LAST_NIF, "") ?: ""
+}
+
+private fun saveConnectionPrefs(context: Context, serverIp: String, serverPortText: String, nif: String) {
+    prefs(context).edit()
+        .putString(PREF_SERVER_IP, serverIp)
+        .putString(PREF_SERVER_PORT, serverPortText)
+        .putString(PREF_LAST_NIF, nif)
+        .apply()
+}
+
 
 class MainActivity : ComponentActivity() {
 
@@ -96,17 +116,19 @@ class MainActivity : ComponentActivity() {
         nfcAdapter = NfcAdapter.getDefaultAdapter(this)
 
         setContent {
-            WeightingCashierApp(
-                hasNfc = nfcAdapter != null,
-                isNfcEnabled = nfcAdapter?.isEnabled == true,
-                onRegisterNfcCallbacks = { tagCallback, statusCallback ->
-                    onTagRead = tagCallback
-                    onNfcStatusChange = statusCallback
-                },
-                onOpenNfcSettings = {
-                    startActivity(Intent(Settings.ACTION_NFC_SETTINGS))
-                }
-            )
+            WeightCashierTheme {
+                WeightingCashierApp(
+                    hasNfc = nfcAdapter != null,
+                    isNfcEnabled = nfcAdapter?.isEnabled == true,
+                    onRegisterNfcCallbacks = { tagCallback, statusCallback ->
+                        onTagRead = tagCallback
+                        onNfcStatusChange = statusCallback
+                    },
+                    onOpenNfcSettings = {
+                        startActivity(Intent(Settings.ACTION_NFC_SETTINGS))
+                    }
+                )
+            }
         }
     }
 
@@ -148,10 +170,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun readNfcText(intent: Intent): String? {
-        val rawMessages = intent.getParcelableArrayExtra(NfcAdapter.EXTRA_NDEF_MESSAGES)
+        val messages: List<NdefMessage>? = if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableArrayExtra(NfcAdapter.EXTRA_NDEF_MESSAGES, NdefMessage::class.java)?.toList()
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableArrayExtra(NfcAdapter.EXTRA_NDEF_MESSAGES)?.mapNotNull { it as? NdefMessage }
+        }
 
-        if (rawMessages != null) {
-            val messages = rawMessages.map { it as NdefMessage }
+        if (!messages.isNullOrEmpty()) {
 
             for (message in messages) {
                 for (record in message.records) {
@@ -174,7 +200,12 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG) ?: return null
+        val tag: Tag = if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(NfcAdapter.EXTRA_TAG, Tag::class.java) ?: return null
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(NfcAdapter.EXTRA_TAG) ?: return null
+        }
         val ndef = Ndef.get(tag) ?: return null
 
         return try {
@@ -221,50 +252,60 @@ fun WeightingCashierApp(
     onOpenNfcSettings: () -> Unit
 ) {
 
+    val context = LocalContext.current
+
     var isLoggedIn by remember { mutableStateOf(false) }
-    var loggedUser by remember { mutableStateOf("") }
+    var customerNif by remember { mutableStateOf("") }
+    var customerName by remember { mutableStateOf("") }
+    var authToken by remember { mutableStateOf<String?>(null) }
+
+    var serverIp by remember { mutableStateOf(getSavedServerIp(context)) }
+    var serverPortText by remember { mutableStateOf(getSavedServerPort(context)) }
+
+    val scope = rememberCoroutineScope()
 
     if (!isLoggedIn) {
         LoginScreen(
-            onLoginSuccess = { username ->
-                loggedUser = username
+            serverIp = serverIp,
+            serverPortText = serverPortText,
+            onServerIpChange = { serverIp = it },
+            onServerPortChange = { serverPortText = it },
+            initialNif = getSavedLastNif(context),
+            onLoginSuccess = { nif, name, token ->
+                customerNif = nif
+                customerName = name
+                authToken = token
+                saveConnectionPrefs(context, serverIp, serverPortText, nif)
                 isLoggedIn = true
             }
         )
         return
     }
 
-    var selectedScale by remember { mutableStateOf("Scale 1") }
-    var developerMode by remember { mutableStateOf(false) }
-    var readProductMode by remember { mutableStateOf(false) }
+    var selectedScale by remember { mutableStateOf("No scale assigned") }
+    var assignedScaleId by remember { mutableStateOf<String?>(null) }
     var readScaleMode by remember { mutableStateOf(false) }
-
-    var raspberryIp by remember { mutableStateOf(DEFAULT_RASPBERRY_IP) }
-    var raspberryPortText by remember { mutableStateOf(RASPBERRY_PORT.toString()) }
-    var raspberryEndpointPath by remember { mutableStateOf(DEFAULT_RASPBERRY_ENDPOINT) }
-    var raspberryPollingEnabled by remember { mutableStateOf(false) }
-    var raspberryStatus by remember { mutableStateOf("Raspberry Pi polling disabled.") }
 
     var items by remember { mutableStateOf(listOf<ProductItem>()) }
     var archive by remember { mutableStateOf(listOf<ArchivedTransaction>()) }
     var selectedArchive by remember { mutableStateOf<ArchivedTransaction?>(null) }
 
-    var productName by remember { mutableStateOf("") }
-    var weightText by remember { mutableStateOf("") }
-    var priceText by remember { mutableStateOf("") }
     var warningText by remember { mutableStateOf<String?>(null) }
+    var socketConnected by remember { mutableStateOf(false) }
+    var socketStatus by remember { mutableStateOf("Disconnected") }
+    var socketRef by remember { mutableStateOf<Socket?>(null) }
 
     var rfidStatus by remember {
-        mutableStateOf("Read a scale tag first, then read product tags.")
+        mutableStateOf("Read a scale tag to select a station.")
     }
 
-    val total = items.sumOf { it.totalPrice }
+    val totalCents = items.sumOf { it.priceCents }
 
     val screenScrollState = rememberScrollState()
     val shoppingListState = rememberLazyListState()
     val archiveListState = rememberLazyListState()
 
-    LaunchedEffect(selectedScale, readProductMode, readScaleMode) {
+    LaunchedEffect(selectedScale, readScaleMode) {
         onRegisterNfcCallbacks(
             { tagText ->
 
@@ -272,53 +313,40 @@ fun WeightingCashierApp(
 
                     readScaleMode -> {
 
-                        when (tagText) {
-
-                            "SCALE_1" -> {
-                                selectedScale = "Scale 1"
-                                rfidStatus = "Selected Scale 1."
-                                readScaleMode = false
-                            }
-
-                            "SCALE_2" -> {
-                                selectedScale = "Scale 2"
-                                rfidStatus = "Selected Scale 2."
-                                readScaleMode = false
-                            }
-
-                            else -> {
-                                rfidStatus = "Unknown scale tag: $tagText"
-                            }
-                        }
-                    }
-
-                    readProductMode -> {
-
-                        val product = productDatabase.find {
-                            it.tagCode == tagText
-                        }
-
-                        if (product != null) {
-
-                            items = items + ProductItem(
-                                productId = product.tagCode,
-                                name = product.name,
-                                weightKg = product.defaultWeightKg,
-                                pricePerKg = product.defaultPricePerKg,
-                                scale = selectedScale
+                        scope.launch {
+                            val result = assignScaleToCustomer(
+                                serverIp,
+                                serverPortText,
+                                authToken,
+                                customerNif,
+                                tagText
                             )
 
-                            rfidStatus = "Added ${product.name} from $selectedScale."
-                            readProductMode = false
+                            if (result == null) {
+                                rfidStatus = "Unable to reach server."
+                                return@launch
+                            }
 
-                        } else {
-                            rfidStatus = "Unknown product tag: $tagText"
+                            if (result.status == "pending") {
+                                selectedScale = "Pending tare"
+                                rfidStatus = "Waiting for scale to tare..."
+                                readScaleMode = false
+                            } else if (result.status == "busy") {
+                                rfidStatus = "Scale is busy. Try another."
+                            } else if (result.status == "success" && result.scaleId != null) {
+                                assignedScaleId = result.scaleId
+                                selectedScale = result.scaleId
+                                rfidStatus = "Selected ${result.scaleId}."
+                                readScaleMode = false
+                            } else {
+                                rfidStatus = result.message ?: "Unable to assign scale."
+                            }
                         }
                     }
 
                     else -> {
                         rfidStatus =
-                            "Tag read: $tagText. Press Read Scale or Read Product first."
+                            "Tag read: $tagText. Press Read Scale first."
                     }
                 }
             },
@@ -328,410 +356,247 @@ fun WeightingCashierApp(
         )
     }
 
-    LaunchedEffect(
-        raspberryPollingEnabled,
-        raspberryIp,
-        raspberryPortText,
-        raspberryEndpointPath
-    ) {
-        while (raspberryPollingEnabled) {
-            val port = raspberryPortText.toIntOrNull()
+    DisposableEffect(isLoggedIn, serverIp, serverPortText, customerNif, authToken) {
+        if (!isLoggedIn) {
+            return@DisposableEffect onDispose { }
+        }
 
-            if (port == null || port !in 1..65535) {
-                raspberryStatus = "Invalid Raspberry Pi port."
-                Log.d(LOG_TAG, "Invalid Raspberry Pi port: $raspberryPortText")
-                delay(1000)
-                continue
+        val baseUrl = buildBaseUrl(serverIp, serverPortText)
+        if (baseUrl == null) {
+            warningText = "Invalid server address."
+            return@DisposableEffect onDispose { }
+        }
+
+        val options = IO.Options()
+        options.reconnection = true
+        options.reconnectionAttempts = Int.MAX_VALUE
+        options.reconnectionDelay = 500
+        options.reconnectionDelayMax = 5000
+
+        val socket = IO.socket(baseUrl, options)
+        socketRef = socket
+
+        val onConnect = Emitter.Listener {
+            socketConnected = true
+            socketStatus = "Live"
+            warningText = null
+            socket.emit("register_android", JSONObject(mapOf("token" to (authToken ?: ""))))
+        }
+
+        val onDisconnect = Emitter.Listener {
+            socketConnected = false
+            socketStatus = "Disconnected"
+        }
+
+        val onCartUpdate = Emitter.Listener { args ->
+            val payload = args.firstOrNull() as? JSONObject ?: return@Listener
+            val updatedItems = parseCartItems(payload)
+            if (updatedItems != null) {
+                items = updatedItems
             }
+        }
 
-            val cleanEndpointPath =
-                if (raspberryEndpointPath.startsWith("/")) {
-                    raspberryEndpointPath
-                } else {
-                    "/$raspberryEndpointPath"
-                }
-
-            val endpoint = "http://$raspberryIp:$port$cleanEndpointPath"
-            val rawJson = fetchRawJson(endpoint)
-
-            if (rawJson != null) {
-                Log.d(LOG_TAG, "Raspberry endpoint response from $endpoint: $rawJson")
-                raspberryStatus = "Logged Raspberry response to Logcat."
-            } else {
-                Log.d(LOG_TAG, "No response from Raspberry endpoint: $endpoint")
-                raspberryStatus = "No response from Raspberry endpoint."
+        val onScaleReady = Emitter.Listener { args ->
+            val payload = args.firstOrNull() as? JSONObject ?: return@Listener
+            val scaleId = payload.optString("scale_id")
+            if (scaleId.isNotBlank()) {
+                assignedScaleId = scaleId
+                selectedScale = scaleId
+                rfidStatus = "Scale ${scaleId} ready."
             }
+        }
 
-            delay(1000)
+        val onScaleError = Emitter.Listener { args ->
+            val payload = args.firstOrNull() as? JSONObject ?: return@Listener
+            val reason = payload.optString("reason")
+            rfidStatus = "Scale error: ${reason.ifBlank { "unknown" }}"
+            selectedScale = "No scale assigned"
+            assignedScaleId = null
+        }
+
+        val onCartError = Emitter.Listener { args ->
+            val payload = args.firstOrNull() as? JSONObject ?: return@Listener
+            val reason = payload.optString("reason")
+            warningText = "Cart error: ${reason.ifBlank { "unknown" }}"
+        }
+
+        socket.on(Socket.EVENT_CONNECT, onConnect)
+        socket.on(Socket.EVENT_DISCONNECT, onDisconnect)
+        socket.on("cart_update", onCartUpdate)
+        socket.on("scale_ready", onScaleReady)
+        socket.on("scale_error", onScaleError)
+        socket.on("cart_error", onCartError)
+        socket.connect()
+
+        onDispose {
+            socket.off(Socket.EVENT_CONNECT, onConnect)
+            socket.off(Socket.EVENT_DISCONNECT, onDisconnect)
+            socket.off("cart_update", onCartUpdate)
+            socket.off("scale_ready", onScaleReady)
+            socket.off("scale_error", onScaleError)
+            socket.off("cart_error", onCartError)
+            socket.disconnect()
+            socketRef = null
+            socketConnected = false
         }
     }
 
-    MaterialTheme {
-
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = {
-                        Text("Weighting Cashier - $loggedUser")
-                    }
-                )
+    LaunchedEffect(socketConnected, assignedScaleId) {
+        while (socketConnected) {
+            val scaleId = assignedScaleId
+            if (!scaleId.isNullOrBlank()) {
+                socketRef?.emit("android_heartbeat", JSONObject(mapOf("scale_id" to scaleId)))
             }
-        ) { padding ->
+            delay(15000)
+        }
+    }
 
-            Box(
+    LaunchedEffect(isLoggedIn, socketConnected, serverIp, serverPortText, customerNif, authToken) {
+        var backoffMs = 1000L
+        while (isLoggedIn && !socketConnected) {
+            val updatedItems = fetchCartItems(serverIp, serverPortText, authToken, customerNif)
+            if (updatedItems != null) {
+                items = updatedItems
+                warningText = "Realtime disconnected. Using fallback sync."
+                backoffMs = 1000L
+            } else {
+                warningText = "Unable to reach server. Retrying..."
+                backoffMs = (backoffMs * 2).coerceAtMost(8000L)
+            }
+            delay(backoffMs)
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text("Weighting Cashier")
+                },
+                actions = {
+                    Text(
+                        text = "Hi, $customerName",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(end = 12.dp)
+                    )
+                }
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.background
+    ) { padding ->
+
+        Box(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+        ) {
+
+            Column(
                 modifier = Modifier
-                    .padding(padding)
-                    .fillMaxSize()
+                    .verticalScroll(screenScrollState)
+                    .padding(16.dp)
+                    .padding(end = 8.dp)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
 
-                Column(
-                    modifier = Modifier
-                        .verticalScroll(screenScrollState)
-                        .padding(16.dp)
-                        .padding(end = 8.dp)
-                        .fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
-
-                    Text(
-                        text = "Current station: $selectedScale",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-
-                    Card(modifier = Modifier.fillMaxWidth()) {
-
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-
-                            Text(
-                                "RFID / NFC Reader",
-                                style = MaterialTheme.typography.titleMedium
-                            )
-
-                            Text(rfidStatus)
-
-                            if (!hasNfc) {
-
-                                Text(
-                                    "This device does not support NFC.",
-                                    color = MaterialTheme.colorScheme.error
-                                )
-
-                            } else if (!isNfcEnabled) {
-
-                                Text(
-                                    "NFC is disabled.",
-                                    color = MaterialTheme.colorScheme.error
-                                )
-
-                                Button(onClick = onOpenNfcSettings) {
-                                    Text("Open NFC Settings")
-                                }
-
-                            } else {
-
-                                Row(
-                                    horizontalArrangement =
-                                        Arrangement.spacedBy(8.dp)
-                                ) {
-
-                                    Button(
-                                        onClick = {
-                                            readScaleMode = true
-                                            readProductMode = false
-                                            rfidStatus =
-                                                "Waiting for scale tag..."
-                                        },
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("Read Scale")
-                                    }
-
-                                    Button(
-                                        onClick = {
-                                            readProductMode = true
-                                            readScaleMode = false
-                                            rfidStatus =
-                                                "Waiting for product tag..."
-                                        },
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("Read Product")
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            developerMode = !developerMode
-                        },
-                        modifier = Modifier.fillMaxWidth()
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            if (developerMode)
-                                "Developer Mode: ON"
-                            else
-                                "Developer Mode: OFF"
+                            text = "Total",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "€${totalCents.moneyFromCents()}",
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                        Text(
+                            text = "Scale: $selectedScale",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = "Realtime: $socketStatus",
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
+                }
 
-                    if (developerMode) {
+                warningText?.let { warning ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                    ) {
+                        Text(
+                            text = warning,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
 
-                        Card(modifier = Modifier.fillMaxWidth()) {
+                Card(modifier = Modifier.fillMaxWidth()) {
 
-                            Column(
-                                modifier = Modifier.padding(12.dp),
-                                verticalArrangement =
-                                    Arrangement.spacedBy(8.dp)
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+
+                        Text(
+                            "Pair a Scale",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+
+                        Text(rfidStatus)
+
+                        if (!hasNfc) {
+
+                            Text(
+                                "This device does not support NFC.",
+                                color = MaterialTheme.colorScheme.error
+                            )
+
+                        } else if (!isNfcEnabled) {
+
+                            Text(
+                                "NFC is disabled.",
+                                color = MaterialTheme.colorScheme.error
+                            )
+
+                            Button(onClick = onOpenNfcSettings) {
+                                Text("Open NFC Settings")
+                            }
+
+                        } else {
+
+                            Button(
+                                onClick = {
+                                    readScaleMode = true
+                                    rfidStatus = "Waiting for scale tag..."
+                                },
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-
-                                Text(
-                                    "Developer Tools",
-                                    style =
-                                        MaterialTheme.typography.titleMedium
-                                )
-
-                                Row(
-                                    horizontalArrangement =
-                                        Arrangement.spacedBy(8.dp)
-                                ) {
-
-                                    Button(
-                                        onClick = {
-                                            selectedScale = "Scale 1"
-                                        }
-                                    ) {
-                                        Text("Mock Scale 1")
-                                    }
-
-                                    Button(
-                                        onClick = {
-                                            selectedScale = "Scale 2"
-                                        }
-                                    ) {
-                                        Text("Mock Scale 2")
-                                    }
-                                }
-
-                                OutlinedTextField(
-                                    value = productName,
-                                    onValueChange = {
-                                        productName = it
-                                    },
-                                    label = {
-                                        Text("Product name")
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
-                                OutlinedTextField(
-                                    value = weightText,
-                                    onValueChange = {
-                                        weightText =
-                                            it.filterNumericDecimal()
-                                    },
-                                    label = {
-                                        Text("Weight (kg)")
-                                    },
-                                    keyboardOptions =
-                                        KeyboardOptions(
-                                            keyboardType =
-                                                KeyboardType.Decimal
-                                        ),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
-                                OutlinedTextField(
-                                    value = priceText,
-                                    onValueChange = {
-                                        priceText =
-                                            it.filterNumericDecimal()
-                                    },
-                                    label = {
-                                        Text("Price per kg (€)")
-                                    },
-                                    keyboardOptions =
-                                        KeyboardOptions(
-                                            keyboardType =
-                                                KeyboardType.Decimal
-                                        ),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
-                                Row(
-                                    horizontalArrangement =
-                                        Arrangement.spacedBy(8.dp)
-                                ) {
-
-                                    Button(
-                                        onClick = {
-
-                                            val weight =
-                                                weightText.toDecimalOrNull()
-
-                                            val price =
-                                                priceText.toDecimalOrNull()
-
-                                            if (
-                                                productName.isNotBlank() &&
-                                                weight != null &&
-                                                price != null
-                                            ) {
-
-                                                items = items + ProductItem(
-                                                    productId =
-                                                        "MANUAL_PRODUCT",
-                                                    name = productName,
-                                                    weightKg = weight,
-                                                    pricePerKg = price,
-                                                    scale = selectedScale
-                                                )
-
-                                                productName = ""
-                                                weightText = ""
-                                                priceText = ""
-                                            }
-                                        }
-                                    ) {
-                                        Text("Add Item")
-                                    }
-
-                                    Button(
-                                        onClick = {
-                                            items =
-                                                items +
-                                                        generateRandomProduct(
-                                                            selectedScale
-                                                        )
-                                        }
-                                    ) {
-                                        Text("Quick Add")
-                                    }
-
-                                    Button(
-                                        onClick = {
-
-                                            val mock =
-                                                productDatabase.random()
-
-                                            items = items + ProductItem(
-                                                productId = mock.tagCode,
-                                                name = mock.name,
-                                                weightKg =
-                                                    Random.nextDouble(
-                                                        0.20,
-                                                        3.00
-                                                    ).roundTo2Decimals(),
-                                                pricePerKg =
-                                                    mock.defaultPricePerKg,
-                                                scale = selectedScale
-                                            )
-
-                                            rfidStatus =
-                                                "Mock Raspberry update received."
-                                        }
-                                    ) {
-                                        Text("Mock Pi")
-                                    }
-                                }
-
-                                Divider()
-
-                                OutlinedTextField(
-                                    value = raspberryIp,
-                                    onValueChange = {
-                                        raspberryIp = it
-                                    },
-                                    label = {
-                                        Text("Raspberry Pi IP")
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
-                                OutlinedTextField(
-                                    value = raspberryPortText,
-                                    onValueChange = {
-                                        raspberryPortText =
-                                            it.filter { character ->
-                                                character.isDigit()
-                                            }.take(5)
-                                    },
-                                    label = {
-                                        Text("Raspberry Pi Port")
-                                    },
-                                    keyboardOptions =
-                                        KeyboardOptions(
-                                            keyboardType =
-                                                KeyboardType.Number
-                                        ),
-                                    isError =
-                                        raspberryPortText.toIntOrNull()
-                                            ?.let { port ->
-                                                port !in 1..65535
-                                            } ?: true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
-                                OutlinedTextField(
-                                    value = raspberryEndpointPath,
-                                    onValueChange = {
-                                        raspberryEndpointPath = it
-                                    },
-                                    label = {
-                                        Text("Raspberry Endpoint Path")
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
-                                Text(raspberryStatus)
-
-                                OutlinedButton(
-                                    onClick = {
-                                        raspberryPollingEnabled = !raspberryPollingEnabled
-
-                                        val cleanEndpointPath =
-                                            if (raspberryEndpointPath.startsWith("/")) {
-                                                raspberryEndpointPath
-                                            } else {
-                                                "/$raspberryEndpointPath"
-                                            }
-
-                                        if (raspberryPollingEnabled) {
-                                            Log.d(
-                                                LOG_TAG,
-                                                "Raspberry polling started. Target: http://$raspberryIp:$raspberryPortText$cleanEndpointPath"
-                                            )
-                                        } else {
-                                            Log.d(LOG_TAG, "Raspberry polling stopped.")
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        if (raspberryPollingEnabled)
-                                            "Stop Raspberry Polling"
-                                        else
-                                            "Start Raspberry Polling"
-                                    )
-                                }
+                                Text("Scan Scale Tag")
                             }
                         }
                     }
+                }
 
-                    Text(
-                        "Current Shopping List",
-                        style = MaterialTheme.typography.titleLarge
-                    )
+                Text(
+                    "My Cart",
+                    style = MaterialTheme.typography.titleLarge
+                )
 
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(260.dp)
-                    ) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(260.dp)
+                ) {
 
                         Box(modifier = Modifier.fillMaxSize()) {
 
@@ -747,7 +612,7 @@ fun WeightingCashierApp(
 
                                 if (items.isEmpty()) {
                                     item {
-                                        Text("No products added yet.")
+                                        Text("Your cart is empty.")
                                     }
                                 }
 
@@ -775,40 +640,38 @@ fun WeightingCashierApp(
                         }
                     }
 
-                    Text(
-                        text = "Total: €${total.money()}",
-                        style = MaterialTheme.typography.titleLarge
-                    )
+                Button(
+                    onClick = {
+                        if (items.isNotEmpty()) {
+                            archive = archive + ArchivedTransaction(
+                                timestamp = currentTimestamp(),
+                                items = items,
+                                total = totalCents / 100.0
+                            )
+                        }
 
-                    Button(
-                        onClick = {
-
-                            if (items.isNotEmpty()) {
-
-                                archive = archive + ArchivedTransaction(
-                                    timestamp = currentTimestamp(),
-                                    items = items,
-                                    total = total
-                                )
-
-                                items = emptyList()
+                        scope.launch {
+                            val ok = resetCart(serverIp, serverPortText, authToken, customerNif)
+                            if (!ok) {
+                                warningText = "Failed to reset cart on server."
                             }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Archive / Checkout Current List")
-                    }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Finish & Start New")
+                }
 
-                    Text(
-                        "Archived Transactions",
-                        style = MaterialTheme.typography.titleMedium
-                    )
+                Text(
+                    "Receipts",
+                    style = MaterialTheme.typography.titleMedium
+                )
 
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(160.dp)
-                    ) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(160.dp)
+                ) {
                         Box(modifier = Modifier.fillMaxSize()) {
                             LazyColumn(
                                 state = archiveListState,
@@ -820,7 +683,7 @@ fun WeightingCashierApp(
                             ) {
                                 if (archive.isEmpty()) {
                                     item {
-                                        Text("No archived transactions yet.")
+                                        Text("No receipts yet.")
                                     }
                                 }
 
@@ -852,152 +715,244 @@ fun WeightingCashierApp(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(20.dp))
-                }
-
-                AppScrollbar(
-                    currentValue = screenScrollState.value,
-                    maxValue = screenScrollState.maxValue,
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .fillMaxHeight()
-                        .padding(vertical = 8.dp, horizontal = 4.dp)
-                )
+                Spacer(modifier = Modifier.height(20.dp))
             }
-            selectedArchive?.let { transaction ->
-                AlertDialog(
-                    onDismissRequest = { selectedArchive = null },
-                    confirmButton = {
-                        TextButton(onClick = { selectedArchive = null }) {
-                            Text("Close")
-                        }
-                    },
-                    title = {
-                        Text("Archived Transaction")
-                    },
-                    text = {
-                        LazyColumn(
-                            modifier = Modifier.heightIn(max = 400.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            item {
-                                Text("Date: ${transaction.timestamp}")
-                            }
 
-                            items(transaction.items) { item ->
-                                Card(modifier = Modifier.fillMaxWidth()) {
-                                    Column(modifier = Modifier.padding(8.dp)) {
-                                        Text(
-                                            item.name,
-                                            style = MaterialTheme.typography.titleMedium
-                                        )
-                                        Text("Product ID: ${item.productId}")
-                                        Text("Source: ${item.scale}")
-                                        Text("${item.weightKg.money()} kg × €${item.pricePerKg.money()}/kg")
-                                        Text("Total: €${item.totalPrice.money()}")
-                                    }
+            AppScrollbar(
+                currentValue = screenScrollState.value,
+                maxValue = screenScrollState.maxValue,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .padding(vertical = 8.dp, horizontal = 4.dp)
+            )
+        }
+        selectedArchive?.let { transaction ->
+            AlertDialog(
+                onDismissRequest = { selectedArchive = null },
+                confirmButton = {
+                    TextButton(onClick = { selectedArchive = null }) {
+                        Text("Close")
+                    }
+                },
+                title = {
+                    Text("Receipt")
+                },
+                text = {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 400.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        item {
+                            Text("Date: ${transaction.timestamp}")
+                        }
+
+                        items(transaction.items) { item ->
+                            Card(modifier = Modifier.fillMaxWidth()) {
+                                Column(modifier = Modifier.padding(8.dp)) {
+                                    Text(
+                                        item.name,
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                    Text("Source: ${item.scale}")
+                                    Text("Weight: ${item.weightKg.money()} kg")
+                                    Text("Price: €${item.priceCents.moneyFromCents()}")
                                 }
                             }
+                        }
 
-                            item {
-                                Text(
-                                    "Final Total: €${transaction.total.money()}",
-                                    style = MaterialTheme.typography.titleMedium
-                                )
-                            }
+                        item {
+                            Text(
+                                "Final Total: €${transaction.total.money()}",
+                                style = MaterialTheme.typography.titleMedium
+                            )
                         }
                     }
-                )
-            }
-
+                }
+            )
         }
+
     }
 }
 
 @Composable
 fun LoginScreen(
-    onLoginSuccess: (String) -> Unit
+    serverIp: String,
+    serverPortText: String,
+    onServerIpChange: (String) -> Unit,
+    onServerPortChange: (String) -> Unit,
+    initialNif: String,
+    onLoginSuccess: (String, String, String) -> Unit
 ) {
 
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
+    var isSignUp by remember { mutableStateOf(false) }
+    var nif by remember { mutableStateOf(initialNif) }
+    var pin by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
-    MaterialTheme {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
 
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
-            contentAlignment = Alignment.Center
-        ) {
+        Card(modifier = Modifier.fillMaxWidth()) {
 
-            Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement =
+                    Arrangement.spacedBy(12.dp)
+            ) {
 
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    verticalArrangement =
-                        Arrangement.spacedBy(12.dp)
-                ) {
+                Text(
+                    "Welcome",
+                    style = MaterialTheme.typography.titleLarge
+                )
 
+                Text(
+                    if (isSignUp) "Create an account to start shopping." else "Sign in to view your cart and receipts.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                OutlinedTextField(
+                    value = nif,
+                    onValueChange = {
+                        nif = it
+                        error = null
+                    },
+                    label = {
+                        Text("Customer ID (NIF)")
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    enabled = !isLoading,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (isSignUp) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = {
+                            name = it
+                            error = null
+                        },
+                        label = {
+                            Text("Name")
+                        },
+                        enabled = !isLoading,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = email,
+                        onValueChange = {
+                            email = it
+                            error = null
+                        },
+                        label = {
+                            Text("Email")
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        enabled = !isLoading,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                OutlinedTextField(
+                    value = pin,
+                    onValueChange = {
+                        pin = it
+                        error = null
+                    },
+                    label = {
+                        Text("PIN")
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    enabled = !isLoading,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                var showAdvanced by remember { mutableStateOf(false) }
+
+                TextButton(onClick = { showAdvanced = !showAdvanced }) {
+                    Text(if (showAdvanced) "Hide connection settings" else "Connection settings")
+                }
+
+                if (showAdvanced) {
+                    OutlinedTextField(
+                        value = serverIp,
+                        onValueChange = onServerIpChange,
+                        label = {
+                            Text("Server IP")
+                        },
+                        enabled = !isLoading,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = serverPortText,
+                        onValueChange = {
+                            onServerPortChange(
+                                it.filter { character ->
+                                    character.isDigit()
+                                }.take(5)
+                            )
+                        },
+                        label = {
+                            Text("Server Port")
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        enabled = !isLoading,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                error?.let {
                     Text(
-                        "Weighting Cashier Login",
-                        style = MaterialTheme.typography.titleLarge
+                        text = it,
+                        color = MaterialTheme.colorScheme.error
                     )
+                }
 
-                    OutlinedTextField(
-                        value = username,
-                        onValueChange = {
-                            username = it
-                            error = null
-                        },
-                        label = {
-                            Text("Username")
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                Button(
+                    onClick = {
+                        if (isLoading) return@Button
 
-                    OutlinedTextField(
-                        value = password,
-                        onValueChange = {
-                            password = it
-                            error = null
-                        },
-                        label = {
-                            Text("Password")
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    error?.let {
-                        Text(
-                            text = it,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-
-                    Button(
-                        onClick = {
-
-                            if (mockLogin(username, password)) {
-                                onLoginSuccess(username)
+                        scope.launch {
+                            isLoading = true
+                            val result = if (isSignUp) {
+                                apiRegister(serverIp, serverPortText, nif, pin, name, email)
                             } else {
-                                error =
-                                    "Invalid username or password."
+                                apiLogin(serverIp, serverPortText, nif, pin)
                             }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Login")
+                            isLoading = false
+
+                            if (result == null) {
+                                error = "Server unreachable. Check Wi‑Fi and address."
+                            } else if (result.status == "success" && !result.clientName.isNullOrBlank() && !result.token.isNullOrBlank()) {
+                                onLoginSuccess(nif.trim(), result.clientName, result.token)
+                            } else {
+                                error = result.message ?: "Request failed."
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    val label = if (isSignUp) "Create Account" else "Sign In"
+                    Text(if (isLoading) "Please wait..." else label)
+                }
+
+                TextButton(
+                    onClick = {
+                        isSignUp = !isSignUp
+                        error = null
                     }
-                    OutlinedButton(
-                        onClick = {
-                            onLoginSuccess("debug-user")
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Debug Auto Login")
-                    }
+                ) {
+                    Text(if (isSignUp) "Already have an account? Sign in" else "New here? Create an account")
                 }
             }
         }
@@ -1027,11 +982,9 @@ fun ProductRow(
                     style = MaterialTheme.typography.titleMedium
                 )
 
-                Text("Product ID: ${item.productId}")
                 Text("Source: ${item.scale}")
                 Text("Weight: ${item.weightKg.money()} kg")
-                Text("Price/kg: €${item.pricePerKg.money()}")
-                Text("Item total: €${item.totalPrice.money()}")
+                Text("Price: €${item.priceCents.moneyFromCents()}")
             }
 
             OutlinedButton(onClick = onRemove) {
@@ -1041,66 +994,137 @@ fun ProductRow(
     }
 }
 
-fun mockLogin(
-    username: String,
-    password: String
-): Boolean {
-
-    val accounts = mapOf(
-        "admin" to "admin",
-        "igor" to "1234",
-        "cashier" to "cashier"
-    )
-
-    return accounts[username.trim()] == password
+private fun buildBaseUrl(serverIp: String, serverPortText: String): String? {
+    val port = serverPortText.toIntOrNull() ?: return null
+    if (port !in 1..65535) return null
+    return "http://$serverIp:$port"
 }
 
-suspend fun fetchRawJson(endpoint: String): String? {
+suspend fun apiLogin(
+    serverIp: String,
+    serverPortText: String,
+    nif: String,
+    pin: String
+): ApiAuthResult? {
+    val base = buildBaseUrl(serverIp, serverPortText) ?: return null
+    val payload = JSONObject(
+        mapOf(
+            "nif" to nif.trim(),
+            "pin" to pin.trim()
+        )
+    )
+
+    val response = postJson("$base/api/auth/login", payload) ?: return null
+    val status = response.optString("status")
+    return ApiAuthResult(
+        status = status.ifBlank { "error" },
+        clientName = response.optString("client_name").ifBlank { null },
+        token = response.optString("token").ifBlank { null },
+        message = response.optString("message").ifBlank {
+            if (status == "unauthorized") "Invalid credentials." else "Sign-in failed."
+        }
+    )
+}
+
+suspend fun assignScaleToCustomer(
+    serverIp: String,
+    serverPortText: String,
+    token: String?,
+    nif: String,
+    scaleTag: String
+): ScaleAssignResult? {
+    val base = buildBaseUrl(serverIp, serverPortText) ?: return null
+    val payload = JSONObject(
+        mapOf(
+            "nif" to nif.trim(),
+            "scale_rfid" to scaleTag.trim().uppercase()
+        )
+    )
+
+    val response = postJson("$base/api/scale/assign", payload, token) ?: return null
+    return ScaleAssignResult(
+        status = response.optString("status"),
+        scaleId = response.optString("scale_id"),
+        message = response.optString("message")
+    )
+}
+
+suspend fun fetchCartItems(
+    serverIp: String,
+    serverPortText: String,
+    token: String?,
+    nif: String
+): List<ProductItem>? {
+    val base = buildBaseUrl(serverIp, serverPortText) ?: return null
+    val response = getJson("$base/api/cart/${nif.trim()}", token) ?: return null
+    if (response.optString("status") != "success") return null
+
+    return parseCartItems(response)
+}
+
+suspend fun resetCart(
+    serverIp: String,
+    serverPortText: String,
+    token: String?,
+    nif: String
+): Boolean {
+    val base = buildBaseUrl(serverIp, serverPortText) ?: return false
+    val payload = JSONObject(mapOf("nif" to nif.trim()))
+    val response = postJson("$base/api/cart/reset", payload, token) ?: return false
+    return response.optString("status") == "success"
+}
+
+suspend fun postJson(url: String, payload: JSONObject, token: String? = null): JSONObject? {
     return withContext(Dispatchers.IO) {
         try {
-            val connection = URL(endpoint).openConnection() as HttpURLConnection
+            val connection = URL(url).openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
+            if (!token.isNullOrBlank()) {
+                connection.setRequestProperty("Authorization", "Bearer $token")
+            }
+            connection.connectTimeout = 1500
+            connection.readTimeout = 1500
+            connection.doOutput = true
+
+            connection.outputStream.use { it.write(payload.toString().toByteArray()) }
+            val responseStream =
+                if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
+
+            val response = responseStream?.bufferedReader()?.readText()
+            connection.disconnect()
+            if (response.isNullOrBlank()) return@withContext null
+
+            JSONObject(response)
+        } catch (_: Exception) {
+            null
+        }
+    }
+}
+
+suspend fun getJson(url: String, token: String? = null): JSONObject? {
+    return withContext(Dispatchers.IO) {
+        try {
+            val connection = URL(url).openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
+            if (!token.isNullOrBlank()) {
+                connection.setRequestProperty("Authorization", "Bearer $token")
+            }
             connection.connectTimeout = 1500
             connection.readTimeout = 1500
 
-            if (connection.responseCode != 200) {
+            if (connection.responseCode !in 200..299) {
                 connection.disconnect()
                 return@withContext null
             }
 
             val response = connection.inputStream.bufferedReader().readText()
             connection.disconnect()
-
-            response
-        } catch (e: Exception) {
-            //Log.e(LOG_TAG, "Error fetching raw JSON from $endpoint", e)
+            JSONObject(response)
+        } catch (_: Exception) {
             null
         }
     }
-}
-
-fun generateRandomProduct(
-    scale: String
-): ProductItem {
-
-    val product = productDatabase.random()
-
-    return ProductItem(
-        productId = product.tagCode,
-        name = product.name,
-        weightKg =
-            Random.nextDouble(0.20, 3.00).roundTo2Decimals(),
-        pricePerKg = product.defaultPricePerKg,
-        scale = scale
-    )
-}
-
-fun Double.roundTo2Decimals(): Double {
-    return String.format(
-        Locale.US,
-        "%.2f",
-        this
-    ).toDouble()
 }
 
 fun Double.money(): String {
@@ -1111,6 +1135,14 @@ fun Double.money(): String {
     )
 }
 
+fun Int.moneyFromCents(): String {
+    return String.format(
+        Locale.US,
+        "%.2f",
+        this / 100.0
+    )
+}
+
 fun currentTimestamp(): String {
     return SimpleDateFormat(
         "yyyy-MM-dd HH:mm",
@@ -1118,33 +1150,6 @@ fun currentTimestamp(): String {
     ).format(Date())
 }
 
-fun String.toDecimalOrNull(): Double? {
-    return this.replace(",", ".").toDoubleOrNull()
-}
-
-fun String.filterNumericDecimal(): String {
-
-    val normalized = this.replace(",", ".")
-    val builder = StringBuilder()
-    var hasDecimal = false
-
-    for (char in normalized) {
-
-        when {
-
-            char.isDigit() -> {
-                builder.append(char)
-            }
-
-            char == '.' && !hasDecimal -> {
-                builder.append(char)
-                hasDecimal = true
-            }
-        }
-    }
-
-    return builder.toString()
-}
 
 @Composable
 fun LazyScrollbar(
@@ -1223,6 +1228,62 @@ fun AppScrollbar(
                     color = MaterialTheme.colorScheme.primary,
                     shape = RoundedCornerShape(100)
                 )
+        )
+    }
+}
+
+fun parseCartItems(payload: JSONObject): List<ProductItem>? {
+    val jsonItems = payload.optJSONArray("items") ?: return emptyList()
+    val items = mutableListOf<ProductItem>()
+
+    for (i in 0 until jsonItems.length()) {
+        val item = jsonItems.optJSONObject(i) ?: continue
+        items.add(
+            ProductItem(
+                name = item.optString("name"),
+                weightGrams = item.optInt("weight_grams", 0),
+                priceCents = item.optInt("price_cents", 0),
+                scale = item.optString("scale")
+            )
+        )
+    }
+
+    return items
+}
+
+suspend fun apiRegister(
+    serverIp: String,
+    serverPortText: String,
+    nif: String,
+    pin: String,
+    name: String,
+    email: String
+): ApiAuthResult? {
+    val base = buildBaseUrl(serverIp, serverPortText) ?: return null
+    val payload = JSONObject(
+        mapOf(
+            "nif" to nif.trim(),
+            "pin" to pin.trim(),
+            "name" to name.trim(),
+            "email" to email.trim()
+        )
+    )
+
+    val response = postJson("$base/api/auth/register", payload) ?: return null
+    val status = response.optString("status")
+    return if (status == "success") {
+        ApiAuthResult(
+            status = "success",
+            clientName = response.optString("client_name").ifBlank { null },
+            token = response.optString("token").ifBlank { null },
+            message = null
+        )
+    } else {
+        ApiAuthResult(
+            status = status.ifBlank { "error" },
+            clientName = null,
+            token = null,
+            message = response.optString("message").ifBlank { "Unable to create account." }
         )
     }
 }

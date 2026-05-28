@@ -1,6 +1,6 @@
 #include <SPI.h>
 #include <Ethernet.h>
-#include <PubSubClient.h>
+#include <ArduinoMqttClient.h>
 #include <Wire.h>
 #include <Adafruit_PN532.h>
 #include <HX711.h>
@@ -16,10 +16,13 @@ IPAddress ip(192, 168, 0, 10);
 // IP configured on the PC Ethernet adapter
 IPAddress server(192, 168, 0, 2); 
 
-const char* topic_publish = "supermarket/scale/1/reading";
+const char* scale_id = "SCALE_01";
+const char* topic_publish = "supermarket/scale/SCALE_01/reading";
+const char* topic_command = "supermarket/scale/SCALE_01/command";
+const char* topic_status = "supermarket/scale/SCALE_01/status";
 
 EthernetClient ethClient;
-PubSubClient mqttClient(ethClient);
+MqttClient mqttClient(ethClient);
 
 // ==========================================
 // 2. NFC SETTINGS (Via I2C)
@@ -36,6 +39,54 @@ const int LOADCELL_SCK_PIN = 5;
 HX711 scale;
 
 float calibration_factor = 2280.0; // Change after calibration if needed
+const float MIN_WEIGHT_GRAMS = 5.0;
+const float MIN_DELTA_GRAMS = 3.0;
+const float MAX_WEIGHT_GRAMS = 30000.0;
+
+bool isArmed = false;
+bool isBusy = false;
+float lastWeight = 0.0;
+
+unsigned long lastHeartbeatMillis = 0;
+const unsigned long HEARTBEAT_INTERVAL_MS = 5000;
+
+void publishStatus(const char* status, const char* reason = nullptr) {
+  String payload = "{\"status\":\"" + String(status) + "\"";
+  if (reason != nullptr) {
+    payload += ",\"reason\":\"" + String(reason) + "\"";
+  }
+  payload += "}";
+
+  mqttClient.beginMessage(topic_status, payload.length(), false, 1);
+  mqttClient.print(payload);
+  mqttClient.endMessage();
+}
+
+void handleTareCommand() {
+  if (isBusy || isArmed) {
+    publishStatus("busy", "already_armed");
+    return;
+  }
+
+  Serial.println("[CMD] Tare requested. Zeroing scale...");
+  scale.tare();
+  lastWeight = scale.get_units(3);
+  isArmed = true;
+  isBusy = true;
+  publishStatus("tared");
+}
+
+void onMqttMessage(int messageSize) {
+  String topic = mqttClient.messageTopic();
+  String payload = "";
+  while (mqttClient.available()) {
+    payload += (char)mqttClient.read();
+  }
+
+  if (topic == topic_command && payload.indexOf("tare") >= 0) {
+    handleTareCommand();
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -74,7 +125,8 @@ void setup() {
   Serial.println(Ethernet.localIP());
 
   // Configure MQTT Client to connect to the PC
-  mqttClient.setServer(server, 1883);
+  mqttClient.setId("ArduinoScale1");
+  mqttClient.onMessage(onMqttMessage);
 }
 
 void reconnectMQTT() {
@@ -84,14 +136,15 @@ void reconnectMQTT() {
     Serial.print(server);
     Serial.println(")...");
 
-    if (mqttClient.connect("ArduinoScale1")) {
+    if (mqttClient.connect(server, 1883)) {
 
       Serial.println("[SUCCESS] Connected to the PC via Direct Cable!");
+      mqttClient.subscribe(topic_command, 1);
 
     } else {
 
       Serial.print("[ERROR] Code=");
-      Serial.print(mqttClient.state());
+      Serial.print(mqttClient.connectError());
       Serial.println(" -> Retrying in 3 seconds.");
 
       delay(3000);
@@ -105,7 +158,34 @@ void loop() {
     reconnectMQTT();
   }
 
-  mqttClient.loop();
+  mqttClient.poll();
+
+  if (millis() - lastHeartbeatMillis >= HEARTBEAT_INTERVAL_MS) {
+    lastHeartbeatMillis = millis();
+    publishStatus("alive");
+  }
+
+  if (!isArmed) {
+    return;
+  }
+
+  float weight = scale.get_units(3);
+  if (weight < 0) weight = 0.0;
+
+  if (weight > MAX_WEIGHT_GRAMS) {
+    publishStatus("error", "weight_too_high");
+    isArmed = false;
+    isBusy = false;
+    return;
+  }
+
+  if (weight < MIN_WEIGHT_GRAMS) {
+    return;
+  }
+
+  if (abs(weight - lastWeight) < MIN_DELTA_GRAMS) {
+    return;
+  }
 
   uint8_t success;
   uint8_t uid[] = { 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -115,46 +195,51 @@ void loop() {
     PN532_MIFARE_ISO14443A,
     uid,
     &uidLength,
-    100
+    200
   );
 
-  if (success) {
-
-    Serial.println("\n--- PRODUCT DETECTED ---");
-
-    String rfidStr = "";
-
-    for (uint8_t i = 0; i < uidLength; i++) {
-      if (uid[i] <= 0x0F) rfidStr += "0";
-      rfidStr += String(uid[i], HEX);
-    }
-
-    rfidStr.toUpperCase();
-
-    Serial.print("RFID: ");
-    Serial.println(rfidStr);
-
-    float weight = scale.get_units(5);
-
-    if (weight < 0) weight = 0.0;
-
-    Serial.print("Weight: ");
-    Serial.print(weight, 1);
-    Serial.println(" g");
-
-    String payload =
-      "{\"rfid\":\"" + rfidStr +
-      "\",\"weight\":" + String(weight, 1) + "}";
-
-    if (mqttClient.publish(topic_publish, payload.c_str())) {
-
-      Serial.println("[MQTT] Successfully sent to the PC!");
-
-    } else {
-
-      Serial.println("[MQTT] Sending error.");
-    }
-
-    delay(2000);
+  if (!success) {
+    publishStatus("error", "rfid_missing");
+    isArmed = false;
+    isBusy = false;
+    return;
   }
+
+  Serial.println("\n--- PRODUCT DETECTED ---");
+
+  String rfidStr = "";
+
+  for (uint8_t i = 0; i < uidLength; i++) {
+    if (uid[i] <= 0x0F) rfidStr += "0";
+    rfidStr += String(uid[i], HEX);
+  }
+
+  rfidStr.toUpperCase();
+
+  Serial.print("RFID: ");
+  Serial.println(rfidStr);
+
+  Serial.print("Weight: ");
+  Serial.print(weight, 1);
+  Serial.println(" g");
+
+  String payload =
+    "{\"rfid\":\"" + rfidStr +
+    "\",\"weight\":" + String(weight, 1) + "}";
+
+  mqttClient.beginMessage(topic_publish, payload.length(), true, 1);
+  mqttClient.print(payload);
+  if (mqttClient.endMessage()) {
+
+    Serial.println("[MQTT] Successfully sent to the PC!");
+
+  } else {
+
+    Serial.println("[MQTT] Sending error.");
+  }
+
+  lastWeight = weight;
+  isArmed = false;
+  isBusy = false;
+  delay(500);
 }
