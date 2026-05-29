@@ -8,16 +8,16 @@
 // ==========================================
 // 1. NETWORK CONFIGURATION
 // ==========================================
-byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x01 };
+// Different MAC and IP from SCALE_01 — both must be unique on the LAN
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x02 };
 
-IPAddress ip(192, 168, 0, 10);
+IPAddress ip(192, 168, 0, 11);
 IPAddress gateway(192, 168, 0, 2);
-IPAddress server(192, 168, 0, 2);
+IPAddress server(192, 168, 0, 2);  // PC/server running MQTT broker
 
-// Store topic strings in flash (PROGMEM) to save SRAM
-const char topic_publish[] PROGMEM = "supermarket/scale/SCALE_01/reading";
-const char topic_command[] PROGMEM = "supermarket/scale/SCALE_01/command";
-const char topic_status[]  PROGMEM = "supermarket/scale/SCALE_01/status";
+const char topic_publish[] PROGMEM = "supermarket/scale/SCALE_02/reading";
+const char topic_command[] PROGMEM = "supermarket/scale/SCALE_02/command";
+const char topic_status[]  PROGMEM = "supermarket/scale/SCALE_02/status";
 
 unsigned long lastHeartbeatMillis = 0;
 const unsigned long HEARTBEAT_INTERVAL_MS = 30000;
@@ -40,9 +40,8 @@ const int LOADCELL_DOUT_PIN = 4;
 const int LOADCELL_SCK_PIN = 5;
 HX711 scale;
 
-float calibration_factor = 2280.0;
+float calibration_factor = 2280.0;  // Calibrate separately for this scale unit
 
-// Publish from flash-stored topic string without copying to a String object
 bool mqttPublishP(const char* topicProgmem, const char* payload) {
   char topicBuf[48];
   strcpy_P(topicBuf, topicProgmem);
@@ -53,7 +52,7 @@ void setup() {
   Serial.begin(115200);
   while (!Serial);
 
-  Serial.println(F("\n=== SCALE_01 INITIALISING ==="));
+  Serial.println(F("\n=== SCALE_02 INITIALISING ==="));
 
   scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
   scale.set_scale(calibration_factor);
@@ -114,8 +113,8 @@ void processPendingTare() {
 void reconnectMQTT() {
   while (!mqttClient.connected()) {
     Serial.print(F("Connecting MQTT... "));
-    // Each scale must use a unique client ID
-    if (mqttClient.connect("ArduinoScale_01")) {
+    // Unique client ID — must differ from SCALE_01's "ArduinoScale_01"
+    if (mqttClient.connect("ArduinoScale_02")) {
       Serial.println(F("connected."));
       char topicBuf[48];
       strcpy_P(topicBuf, topic_command);
@@ -147,7 +146,6 @@ void loop() {
   uint8_t uid[8] = {0};
   uint8_t uidLength;
 
-  // Non-blocking 80 ms poll window — keeps MQTT loop responsive
   bool success = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 80);
 
   if (success) {
@@ -177,6 +175,6 @@ void loop() {
       Serial.println(F("[ERROR] Publish failed."));
     }
 
-    delay(2000); // debounce: ignore re-reads of the same tag for 2s
+    delay(2000);
   }
 }

@@ -7,9 +7,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 private val DarkColorScheme = darkColorScheme(
-    primary = WCPrimary,
-    secondary = WCSecondary,
-    tertiary = WCPrimaryDark,
+    primary = QCGreen,
+    secondary = QCNavyLight,
+    tertiary = QCGreenDark,
     background = Color(0xFF0B1220),
     surface = Color(0xFF0F172A),
     onPrimary = Color.White,
@@ -19,27 +19,27 @@ private val DarkColorScheme = darkColorScheme(
     onSurface = Color(0xFFF1F5F9),
     surfaceVariant = Color(0xFF1E293B),
     outline = Color(0xFF334155),
-    error = WCError
+    error = QCError
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = WCPrimary,
-    secondary = WCSecondary,
-    tertiary = WCPrimaryDark,
-    background = WCBackground,
-    surface = WCSurface,
-    surfaceVariant = WCSurfaceVariant,
-    outline = WCOutline,
-    error = WCError,
+    primary = QCGreen,
+    secondary = QCNavy,
+    tertiary = QCGreenDark,
+    background = QCBackground,
+    surface = QCSurface,
+    surfaceVariant = QCSurfaceVariant,
+    outline = QCOutline,
+    error = QCError,
     onPrimary = Color.White,
-    onSecondary = WCInk,
+    onSecondary = Color.White,
     onTertiary = Color.White,
-    onBackground = WCInk,
-    onSurface = WCInk
+    onBackground = QCInk,
+    onSurface = QCInk
 )
 
 @Composable
-fun WeightCashierTheme(
+fun QuickCartTheme(
     darkTheme: Boolean = false,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit

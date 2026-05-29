@@ -2,643 +2,575 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>QuickCart - Live Monitor</title>
-    
+    <title>QuickCart — Live Monitor</title>
     <link href="{{ url_for('static', filename='css/bootstrap.min.css') }}" rel="stylesheet">
-    
-    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
-    
+    <script src="{{ url_for('static', filename='js/bootstrap.bundle.min.js') }}"></script>
+    <script src="/socket.io/socket.io.js"></script>
     <style>
         :root {
-            --ink: #0b1020;
-            --ink-muted: #5a6476;
-            --panel: #ffffff;
-            --line: #d7e0ea;
-            --accent: #409938;
-            --accent-2: #2d742a;
-            --glow: rgba(64, 153, 56, 0.22);
-            --bg-1: #f4f7fb;
-            --bg-2: #eef2f7;
-            --gold: #c59a5b;
-            --font-display: "Aptos Display", "Segoe UI Variable Display", "Segoe UI", "Trebuchet MS", sans-serif;
-            --font-body: "Aptos", "Segoe UI Variable Text", "Segoe UI", "Trebuchet MS", sans-serif;
+            --green:      #3C7A42;
+            --green-dark: #2A5A2E;
+            --navy:       #1B2A47;
+            --bg:         #F2F5F8;
+            --surface:    #FFFFFF;
+            --surface2:   #EDF2F7;
+            --outline:    #CBD5E1;
+            --muted:      #64748B;
+            --font:       "Segoe UI", "Aptos", system-ui, sans-serif;
         }
-
+        *, *::before, *::after { box-sizing: border-box; }
         body {
-            font-family: var(--font-body);
-            background:
-                radial-gradient(900px 600px at 10% -10%, #d6eef3 0%, transparent 55%),
-                radial-gradient(700px 500px at 90% 0%, #f6efe4 0%, transparent 52%),
-                linear-gradient(180deg, var(--bg-1), var(--bg-2));
-            color: var(--ink);
+            font-family: var(--font);
+            background: var(--bg);
+            color: var(--navy);
             min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .page-content {
-            flex: 1 0 auto;
-        }
-
-        .site-footer {
-            margin-top: auto;
-            padding: 2rem 0;
-            color: rgba(255, 255, 255, 0.92);
-            background:
-                linear-gradient(90deg, rgba(11, 16, 32, 0.92), rgba(11, 16, 32, 0.68)),
-                url("{{ url_for('static', filename='shopping-carts.jpg') }}");
-            background-size: cover;
-            background-position: center;
-            border-top: 1px solid rgba(255, 255, 255, 0.12);
-        }
-
-        .site-footer .footer-inner {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 1rem;
-            flex-wrap: wrap;
-        }
-
-        .site-footer small {
-            color: rgba(255, 255, 255, 0.78);
-        }
-
-        .navbar {
-            background: #ffffff !important;
-            box-shadow: 0 10px 26px rgba(7, 10, 18, 0.08);
-            border-bottom: 1px solid rgba(11, 16, 32, 0.08);
-            padding-top: 0.85rem;
-            padding-bottom: 0.85rem;
-        }
-
-        .navbar-brand {
-            font-family: var(--font-display);
-            font-weight: 700;
-            letter-spacing: 0.6px;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .navbar .nav-link {
-            color: rgba(11, 16, 32, 0.82) !important;
-        }
-
-        .navbar .nav-link:hover {
-            color: rgba(11, 16, 32, 1) !important;
-        }
-
-        .navbar .nav-link.active {
-            color: var(--accent) !important;
-            font-weight: 700;
-        }
-
-        .brand-logo {
-            height: 48px;
-            width: auto;
-            display: block;
-            filter: none;
-        }
-
-        @media (max-width: 768px) {
-            .navbar {
-                padding-top: 0.6rem;
-                padding-bottom: 0.6rem;
-            }
-
-            .brand-logo {
-                height: 40px;
-            }
-        }
-
-        .nav-link {
-            font-weight: 500;
-            letter-spacing: 0.2px;
-        }
-
-        .hero {
-            padding: 2.75rem 0 1.75rem;
-            position: relative;
-        }
-
-        .hero::after {
-            content: "";
-            position: absolute;
-            inset: 1.25rem 0 auto 0;
-            height: 1px;
-            background: linear-gradient(90deg, transparent, rgba(11, 16, 32, 0.18), transparent);
-        }
-
-        .hero-title {
-            font-family: var(--font-display);
-            font-size: clamp(2.1rem, 3.8vw, 3.4rem);
-            letter-spacing: 0.5px;
             margin: 0;
         }
 
-        .hero-subtitle {
-            color: var(--ink-muted);
-            max-width: 640px;
-            margin-top: 0.75rem;
+        /* ── Topbar ──────────────────────────────────── */
+        .topbar {
+            position: sticky; top: 0; z-index: 200;
+            background: var(--surface);
+            border-bottom: 1px solid var(--outline);
+            padding: 0.7rem 1.5rem;
+            display: flex; align-items: center; justify-content: space-between;
+            box-shadow: 0 2px 12px rgba(0,0,0,.06);
+        }
+        .topbar-brand { display: flex; align-items: center; gap: .6rem; text-decoration: none; }
+        .brand-logo   { height: 38px; }
+        .topbar-nav   { display: flex; align-items: center; gap: 1.4rem; }
+        .topbar-nav a { font-size:.88rem; font-weight:500; color:var(--muted); text-decoration:none; }
+        .topbar-nav a:hover { color:var(--navy); }
+        .topbar-nav a.active { color:var(--green); font-weight:600; }
+
+        .conn-pill {
+            display: inline-flex; align-items: center; gap:.4rem;
+            font-size:.78rem; font-weight:700; letter-spacing:.3px;
+            padding:.3rem .8rem; border-radius:999px;
+            background:var(--navy); color:#fff;
+        }
+        .conn-dot { width:8px; height:8px; border-radius:50%; background:#ef4444; flex-shrink:0; }
+        .conn-pill.live .conn-dot { background:#22c55e; box-shadow:0 0 6px rgba(34,197,94,.7); }
+
+        /* ── Layout ──────────────────────────────────── */
+        .page { max-width: 1440px; margin: 0 auto; padding: 1.5rem 1.5rem 4rem; }
+
+        .section-heading {
+            font-size:.68rem; font-weight:800; letter-spacing:1.2px;
+            text-transform:uppercase; color:var(--muted); margin-bottom:.75rem;
         }
 
-        .status-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            background: #0b1220;
-            color: #e8eef8;
-            padding: 0.5rem 1rem;
-            border-radius: 999px;
-            border: 1px solid rgba(255, 255, 255, 0.18);
-            font-size: 0.9rem;
-        }
-
-        .status-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: #ef4444;
-            box-shadow: 0 0 12px rgba(239, 68, 68, 0.6);
-        }
-
-        .status-live .status-dot {
-            background: #10b981;
-            box-shadow: 0 0 12px rgba(16, 185, 129, 0.6);
-        }
-
-        .panel-grid {
-            margin-top: 1.25rem;
-        }
-
-        .summary-bar {
+        /* ── Scale cards ─────────────────────────────── */
+        .scales-row {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 1rem;
-            margin: 1.5rem 0;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: .9rem;
+            margin-bottom: 2rem;
         }
-
-        .summary-card {
-            background: rgba(255, 255, 255, 0.9);
-            border: 1px solid var(--line);
-            border-radius: 16px;
-            padding: 1.1rem 1.35rem;
-            box-shadow: 0 14px 32px rgba(9, 12, 22, 0.1);
-            transition: transform 0.25s ease, box-shadow 0.25s ease;
-        }
-
-        .summary-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 18px 36px rgba(9, 12, 22, 0.14);
-        }
-
-        .summary-label {
-            font-size: 0.8rem;
-            color: var(--ink-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.4px;
-        }
-
-        .summary-value {
-            font-size: 1.6rem;
-            font-weight: 700;
-            margin-top: 0.35rem;
-        }
-
-        .section-title {
-            font-family: var(--font-display);
-            font-size: 1.25rem;
-            margin-top: 2rem;
-        }
-
-        .scale-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 1rem;
-        }
-
         .scale-card {
-            border: 1px solid var(--line);
+            background: var(--surface);
+            border: 1px solid var(--outline);
+            border-left: 4px solid var(--outline);
             border-radius: 14px;
-            padding: 1rem;
-            background: #ffffff;
-            box-shadow: 0 10px 24px rgba(9, 12, 22, 0.08);
+            padding: 1rem 1.2rem;
+            box-shadow: 0 3px 14px rgba(0,0,0,.06);
+            transition: border-color .3s, box-shadow .3s;
         }
-
-        .scale-status {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.4rem;
-            font-size: 0.85rem;
-            font-weight: 600;
+        .scale-card.sc-online {
+            border-left-color: var(--green);
+            box-shadow: 0 4px 20px rgba(60,122,66,.13);
         }
+        .scale-card.sc-offline { opacity: .8; }
 
-        .status-chip {
-            width: 8px;
-            height: 8px;
-            border-radius: 999px;
-            background: #94a3b8;
+        .sc-top { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:.55rem; }
+        .sc-id   { font-size:.7rem; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:var(--muted); }
+        .sc-loc  { font-size:.95rem; font-weight:600; margin-top:.1rem; }
+
+        .conn-badge {
+            display: inline-flex; align-items:center; gap:.25rem;
+            font-size:.68rem; font-weight:700; padding:.15rem .45rem;
+            border-radius:999px; white-space:nowrap;
         }
+        .conn-badge .bdot { width:5px; height:5px; border-radius:50%; }
+        .cb-online { background:rgba(34,197,94,.13); color:#15803d; border:1px solid rgba(34,197,94,.35); }
+        .cb-online .bdot { background:#22c55e; }
+        .cb-offline { background:rgba(148,163,184,.12); color:var(--muted); border:1px solid rgba(148,163,184,.35); }
+        .cb-offline .bdot { background:#94a3b8; }
 
-        .status-live .status-chip { background: #10b981; }
-        .status-stale .status-chip { background: #f59e0b; }
-        .status-idle .status-chip { background: #94a3b8; }
-
-        .toolbar {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.75rem;
-            align-items: center;
-            justify-content: space-between;
-            margin-top: 1.25rem;
+        .sc-assigned {
+            font-size:.78rem; font-weight:600; color:var(--green-dark);
+            margin-top:.4rem; display:flex; align-items:center; gap:.3rem;
         }
+        .sc-meta { font-size:.74rem; color:var(--muted); margin-top:.3rem; line-height:1.6; }
 
-        .toggle-group {
-            display: inline-flex;
-            border: 1px solid var(--line);
-            border-radius: 999px;
-            overflow: hidden;
-            background: #fff;
+        /* ── Stats strip ─────────────────────────────── */
+        .stats-strip {
+            display: flex; gap:.75rem; flex-wrap:wrap; margin-bottom:1.1rem;
         }
-
-        .toggle-group button {
-            border: none;
-            padding: 0.4rem 1rem;
-            background: transparent;
-            font-size: 0.85rem;
+        .stat-chip {
+            background:var(--surface); border:1px solid var(--outline);
+            border-radius:10px; padding:.4rem 1rem;
+            display:flex; align-items:center; gap:.45rem; font-size:.82rem;
         }
+        .stat-val { font-size:1.05rem; font-weight:700; color:var(--green); }
 
-        .toggle-group button.active {
-            background: linear-gradient(135deg, var(--accent), var(--accent-2));
-            color: #fff;
-        }
-
-        .timeline {
-            border: 1px solid var(--line);
-            border-radius: 16px;
-            padding: 1rem;
-            background: #fff;
-            max-height: 280px;
-            overflow: auto;
-            box-shadow: 0 12px 30px rgba(9, 12, 22, 0.08);
-        }
-
-        .timeline-item {
+        /* ── Carts grid ──────────────────────────────── */
+        .carts-grid {
             display: grid;
-            grid-template-columns: 90px 1fr;
-            gap: 0.75rem;
-            padding: 0.5rem 0;
-            border-bottom: 1px dashed var(--line);
+            grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+            gap: 1.1rem;
         }
 
-        .timeline-item:last-child { border-bottom: none; }
-
-        .timeline-time {
-            font-size: 0.8rem;
-            color: var(--ink-muted);
-        }
-
-        .focus-ring:focus-visible {
-            outline: 2px solid var(--accent);
-            outline-offset: 2px;
-        }
+        @keyframes slide-in  { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
+        @keyframes flash-in  { 0%{ box-shadow:0 0 0 4px rgba(60,122,66,.5); } 100%{ box-shadow:0 6px 24px rgba(0,0,0,.08); } }
+        @keyframes row-flash { 0%{ background:#dcfce7; } 100%{ background:transparent; } }
 
         .cart-card {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            border-radius: 18px;
-            box-shadow: 0 18px 40px rgba(9, 12, 22, 0.12);
-            transition: transform 0.25s ease, box-shadow 0.25s ease;
-            overflow: hidden;
-            animation: rise 0.45s ease both;
-        }
-
-        .cart-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 28px 60px rgba(9, 12, 22, 0.18);
-        }
-
-        .card-header {
-            background: linear-gradient(135deg, var(--accent), var(--accent-2)) !important;
-            color: white;
-            border-radius: 0 !important;
-            font-weight: 600;
-            font-size: 0.95rem;
-            letter-spacing: 0.4px;
-        }
-
-        .table { margin-bottom: 0; }
-
-        .table thead th {
-            font-weight: 600;
-            text-transform: uppercase;
-            font-size: 0.72rem;
-            letter-spacing: 0.5px;
-            color: var(--ink-muted);
-        }
-
-        .price-text {
-            font-weight: 700;
-            color: var(--accent);
-        }
-
-        .total-section {
-            font-size: 1.2rem;
-            font-weight: 700;
-            color: var(--ink);
-        }
-
-        .empty-state {
-            border: 1px dashed var(--line);
+            background: var(--surface);
+            border: 1px solid var(--outline);
             border-radius: 16px;
-            padding: 2.5rem 2rem;
-            text-align: center;
-            color: var(--ink-muted);
-            background: rgba(255, 255, 255, 0.7);
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,.07);
+            transition: box-shadow .2s;
+            animation: slide-in .35s ease both;
+        }
+        .cart-card:hover { box-shadow: 0 8px 32px rgba(0,0,0,.12); }
+        .cart-card.flash { animation: flash-in .85s ease-out forwards; }
+
+        .cart-head {
+            background: linear-gradient(135deg, var(--green), var(--green-dark));
+            color: #fff; padding: .9rem 1.2rem;
+            display: flex; justify-content:space-between; align-items:flex-start;
+        }
+        .cart-name { font-weight:700; font-size:.97rem; }
+        .cart-nif  { font-size:.72rem; opacity:.78; font-family:monospace; margin-top:.1rem; }
+        .cart-scale-tag {
+            background:rgba(255,255,255,.2); border:1px solid rgba(255,255,255,.3);
+            border-radius:7px; padding:.18rem .55rem;
+            font-size:.7rem; font-weight:600; letter-spacing:.3px; white-space:nowrap;
+            margin-top:.1rem;
         }
 
-        @keyframes rise {
-            from { transform: translateY(10px); opacity: 0; }
-            to { transform: translateY(0); opacity: 1; }
+        .cart-table { width:100%; border-collapse:collapse; }
+        .cart-table td {
+            padding:.48rem 1.2rem; font-size:.85rem;
+            border-bottom: 1px solid var(--surface2);
         }
+        .cart-table tr:last-child td { border-bottom:none; }
+        .cart-table td:nth-child(2) { color:var(--muted); font-size:.78rem; text-align:right; white-space:nowrap; }
+        .cart-table td:nth-child(3) { font-weight:600; color:var(--green-dark); text-align:right; white-space:nowrap; }
+        .cart-table .item-name { font-weight:500; }
+        .row-new { animation: row-flash .9s ease-out forwards; }
 
-        @media (max-width: 768px) {
-            .hero { padding-top: 1.5rem; }
+        .cart-foot {
+            display:flex; justify-content:space-between; align-items:center;
+            padding:.65rem 1.2rem; background:var(--surface2);
+            border-top:1px solid var(--outline);
+        }
+        .cart-updated { font-size:.7rem; color:var(--muted); }
+        .cart-total   { font-size:1.05rem; font-weight:700; color:var(--navy); }
+
+        .empty-carts {
+            grid-column: 1/-1; text-align:center; padding:3rem 2rem;
+            background:var(--surface); border-radius:16px;
+            border:1.5px dashed var(--outline); color:var(--muted);
+        }
+        .empty-icon { font-size:2.4rem; margin-bottom:.5rem; }
+        .empty-title { font-weight:600; margin-bottom:.25rem; }
+
+        /* ── Feed ────────────────────────────────────── */
+        .feed {
+            background:var(--surface); border:1px solid var(--outline);
+            border-radius:14px; overflow:hidden;
+            box-shadow:0 3px 14px rgba(0,0,0,.05); margin-top:2rem;
+        }
+        .feed-hd {
+            padding:.8rem 1.2rem; border-bottom:1px solid var(--outline);
+            font-weight:600; font-size:.88rem; display:flex; align-items:center; gap:.4rem;
+            color:var(--navy);
+        }
+        .feed-body { max-height:240px; overflow-y:auto; }
+        .feed-row {
+            display:grid; grid-template-columns:140px 1fr auto;
+            gap:.5rem; align-items:center;
+            padding:.45rem 1.2rem; border-bottom:1px solid var(--surface2);
+            font-size:.8rem; animation:slide-in .25s ease both;
+        }
+        .feed-row:last-child { border-bottom:none; }
+        .feed-time { color:var(--muted); font-family:monospace; font-size:.74rem; }
+        .feed-prod { font-weight:600; }
+        .feed-wt   { color:var(--muted); font-size:.76rem; margin-left:.25rem; }
+        .feed-sc   { color:var(--muted); font-family:monospace; font-size:.74rem; text-align:right; }
+        .feed-empty { padding:1.2rem; text-align:center; color:var(--muted); font-size:.83rem; }
+
+        /* ── Footer ──────────────────────────────────── */
+        .page-foot {
+            text-align:center; padding:1.25rem; color:var(--muted);
+            font-size:.78rem; border-top:1px solid var(--outline); margin-top:1.5rem;
         }
     </style>
 </head>
 <body>
 
-<nav class="navbar navbar-expand-lg navbar-light">
-    <div class="container-fluid px-4">
-        <a class="navbar-brand" href="/" aria-label="Home">
-            <img class="brand-logo" src="{{ url_for('static', filename='web_logo.png') }}" alt="QuickCart logo">
-        </a>
-        <div class="navbar-nav ms-auto">
-            <a class="nav-link active" href="/">Live Monitor</a>
-            <a class="nav-link" href="/admin">Admin Console</a>
+<!-- Topbar -->
+<div class="topbar">
+    <a class="topbar-brand" href="/">
+        <img class="brand-logo" src="{{ url_for('static', filename='web_logo.png') }}" alt="QuickCart">
+    </a>
+    <nav class="topbar-nav">
+        <a href="/" class="active">Live Monitor</a>
+        <a href="/admin">Admin Console</a>
+        <div id="conn-pill" class="conn-pill ms-2">
+            <span class="conn-dot"></span>
+            <span id="conn-label">Connecting…</span>
         </div>
-    </div>
-</nav>
-
-<div class="container py-4 page-content">
-    <div class="hero d-flex flex-wrap justify-content-between align-items-center gap-3">
-        <div>
-            <h2 class="hero-title">Live Floor Overview</h2>
-            <p class="hero-subtitle">Real-time carts, station activity, and pricing updates across all active cashiers.</p>
-        </div>
-        <div id="network-status" class="status-pill">
-            <span class="status-dot"></span>
-            <span>Disconnected</span>
-        </div>
-    </div>
-
-    <div class="summary-bar">
-        <div class="summary-card">
-            <div class="summary-label">Active Customers</div>
-            <div id="stat-customers" class="summary-value">0</div>
-        </div>
-        <div class="summary-card">
-            <div class="summary-label">Items in Carts</div>
-            <div id="stat-items" class="summary-value">0</div>
-        </div>
-        <div class="summary-card">
-            <div class="summary-label">Live Total</div>
-            <div id="stat-total" class="summary-value">EUR 0.00</div>
-        </div>
-    </div>
-
-    <h3 class="section-title">Scale Status</h3>
-    <div id="scale-grid" class="scale-grid"></div>
-
-    <div class="toolbar">
-        <h3 class="section-title">Active Carts</h3>
-        <div class="toggle-group" role="tablist" aria-label="View mode">
-            <button id="view-by-customer" class="active" type="button">By Customer</button>
-            <button id="view-by-scale" type="button">By Scale</button>
-        </div>
-    </div>
-
-    <div class="row g-4 panel-grid" id="monitor-grid"></div>
-
-    <h3 class="section-title">Latest Reads</h3>
-    <div id="timeline" class="timeline"></div>
+    </nav>
 </div>
 
-<script>
-    const socket = io();
-    const grid = document.getElementById('monitor-grid');
-    const status = document.getElementById('network-status');
-    const scaleGrid = document.getElementById('scale-grid');
-    const timeline = document.getElementById('timeline');
-    const viewByCustomer = document.getElementById('view-by-customer');
-    const viewByScale = document.getElementById('view-by-scale');
-    const statCustomers = document.getElementById('stat-customers');
-    const statItems = document.getElementById('stat-items');
-    const statTotal = document.getElementById('stat-total');
+<!-- Main -->
+<div class="page">
 
-    let currentCarts = {};
-    let cartMeta = {};
-    let currentView = 'customer';
-
-    socket.on('connect', () => {
-        status.classList.add("status-live");
-        status.querySelector("span:last-child").innerText = "System Live";
-    });
-
-    socket.on('disconnect', () => {
-        status.classList.remove("status-live");
-        status.querySelector("span:last-child").innerText = "Disconnected";
-    });
-
-    socket.on('update_event', (data) => {
-        currentCarts = data || {};
-        renderCarts();
-    });
-
-    socket.on('cart_meta', (data) => {
-        cartMeta = data || {};
-        renderCarts();
-    });
-
-    socket.on('stats_update', (data) => {
-        if (!data) return;
-        statCustomers.innerText = data.active_customers ?? 0;
-        statItems.innerText = data.item_count ?? 0;
-        statTotal.innerText = `EUR ${(data.total_cents / 100).toFixed(2)}`;
-    });
-
-    socket.on('status_update', (data) => {
-        renderScaleStatus(data || []);
-    });
-
-    socket.on('reads_snapshot', (data) => {
-        renderReads(data || []);
-    });
-
-    socket.on('read_event', (data) => {
-        if (!data) return;
-        prependRead(data);
-    });
-
-    socket.on('unknown_rfid_event', (data) => {
-        if (!data) return;
-        showToast(`Unknown RFID ${data.rfid} on ${data.scale_id}`);
-    });
-
-    viewByCustomer.addEventListener('click', () => {
-        currentView = 'customer';
-        viewByCustomer.classList.add('active');
-        viewByScale.classList.remove('active');
-        renderCarts();
-    });
-
-    viewByScale.addEventListener('click', () => {
-        currentView = 'scale';
-        viewByScale.classList.add('active');
-        viewByCustomer.classList.remove('active');
-        renderCarts();
-    });
-
-    function renderCarts() {
-        grid.innerHTML = '';
-        const cartEntries = Object.entries(currentCarts || {});
-        if (cartEntries.length === 0) {
-            grid.innerHTML = '<div class="col-12"><div class="empty-state"><h5>No active carts yet.</h5><p class="small">Waiting for the next scale reading. Checklist: MQTT broker live, scale online, Android assigned.</p></div></div>';
-            return;
-        }
-
-        if (currentView === 'scale') {
-            const scaleMap = {};
-            cartEntries.forEach(([customer, items]) => {
-                items.forEach(item => {
-                    const scaleKey = item.scale || 'Unknown';
-                    if (!scaleMap[scaleKey]) scaleMap[scaleKey] = [];
-                    scaleMap[scaleKey].push({ ...item, customer });
-                });
-            });
-
-            Object.entries(scaleMap).forEach(([scale, items]) => {
-                renderCard(`Scale ${scale}`, items, true);
-            });
-        } else {
-            cartEntries.forEach(([customer, items]) => {
-                renderCard(`Client ${customer}`, items, false, cartMeta[customer]?.last_update);
-            });
-        }
-    }
-
-    function renderCard(title, items, showCustomer, lastUpdate) {
-        let totalSum = 0;
-        let rowsHtml = '';
-
-        items.forEach(item => {
-            rowsHtml += `
-                <tr>
-                    <td>
-                        <strong>${item.name}</strong>
-                        <br>
-                        <small class="text-muted">${showCustomer ? item.customer : `via ${item.scale}`}</small>
-                    </td>
-                    <td class="text-center align-middle">${item.weight.toFixed(0)} g</td>
-                    <td class="text-end align-middle price-text">${item.price.toFixed(2)} €</td>
-                </tr>`;
-            totalSum += item.price;
-        });
-
-        const updateLabel = lastUpdate ? `<div class="text-muted small">Last update: ${lastUpdate}</div>` : '';
-
-        grid.innerHTML += `
-            <div class="col-md-6 col-lg-4">
-                <div class="card cart-card">
-                    <div class="card-header py-3">${title}</div>
-                    <div class="card-body p-3">
-                        ${updateLabel}
-                        <table class="table table-sm table-borderless mt-2">
-                            <thead><tr><th>Item Details</th><th class="text-center">Weight</th><th class="text-end">Subtotal</th></tr></thead>
-                            <tbody>${rowsHtml}</tbody>
-                        </table>
-                        <div class="d-flex justify-content-between align-items-center mt-3 pt-2 border-top">
-                            <span class="text-muted small fw-semibold">Grand Total</span>
-                            <span class="total-section">${totalSum.toFixed(2)} €</span>
-                        </div>
-                    </div>
-                </div>
-            </div>`;
-    }
-
-    function renderScaleStatus(scales) {
-        if (!Array.isArray(scales)) return;
-        scaleGrid.innerHTML = scales.map(scale => {
-            const statusClass = `status-${scale.health}`;
-            const assigned = scale.assigned_nif ? `Assigned: ${scale.assigned_nif}` : 'Unassigned';
-            const lastRead = scale.last_reading ? `Last read: ${scale.last_reading}` : 'No reads yet';
-            return `
-                <div class="scale-card ${statusClass}">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <div><strong>${scale.scale_id}</strong></div>
-                        <div class="scale-status ${statusClass}">
-                            <span class="status-chip"></span>
-                            <span>${scale.health}</span>
-                        </div>
-                    </div>
-                    <div class="small text-muted">${scale.location}</div>
-                    <div class="small">${assigned}</div>
-                    <div class="small text-muted">${lastRead}</div>
-                </div>`;
-        }).join('');
-    }
-
-    function renderReads(reads) {
-        timeline.innerHTML = '';
-        if (!Array.isArray(reads) || reads.length === 0) {
-            timeline.innerHTML = '<div class="text-muted small">No reads yet.</div>';
-            return;
-        }
-        reads.forEach(item => prependRead(item, true));
-    }
-
-    function prependRead(item, initial = false) {
-        const time = item.created_at || new Date().toLocaleTimeString();
-        const product = item.product_name ? item.product_name : 'Unknown tag';
-        const html = `
-            <div class="timeline-item">
-                <div class="timeline-time">${time}</div>
-                <div>
-                    <div><strong>${product}</strong> on ${item.scale_id}</div>
-                    <div class="small text-muted">RFID ${item.rfid} • ${item.weight_grams} g</div>
-                </div>
-            </div>`;
-
-        if (initial) {
-            timeline.insertAdjacentHTML('beforeend', html);
-        } else {
-            timeline.insertAdjacentHTML('afterbegin', html);
-        }
-    }
-
-    function showToast(message) {
-        const toast = document.createElement('div');
-        toast.className = 'toast align-items-center text-bg-dark border-0 show mb-2';
-        toast.role = 'alert';
-        toast.innerHTML = `
-            <div class="d-flex">
-                <div class="toast-body">${message}</div>
-                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
-            </div>`;
-        document.getElementById('toast-container').appendChild(toast);
-        setTimeout(() => toast.remove(), 6000);
-    }
-</script>
-
-<div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container"></div>
-
-<footer class="site-footer">
-    <div class="container footer-inner">
-        <div class="fw-semibold">QuickCart</div>
-        <small>Live monitor &middot; Admin console</small>
+    <!-- Scale Stations -->
+    <p class="section-heading">Scale Stations</p>
+    <div id="scales-row" class="scales-row">
+        <div style="color:var(--muted);font-size:.85rem">Loading…</div>
     </div>
-</footer>
+
+    <!-- Stats -->
+    <div class="stats-strip">
+        <div class="stat-chip">Active customers <span id="s-customers" class="stat-val">0</span></div>
+        <div class="stat-chip">Items in carts   <span id="s-items"     class="stat-val">0</span></div>
+        <div class="stat-chip">Cart value        <span id="s-total"     class="stat-val">€0.00</span></div>
+    </div>
+
+    <!-- Live Carts -->
+    <p class="section-heading">Live Shopping Carts</p>
+    <div id="carts-grid" class="carts-grid">
+        <div class="empty-carts">
+            <div class="empty-icon">🛒</div>
+            <div class="empty-title">No active carts</div>
+            <div style="font-size:.85rem">Carts appear here as customers scan items.</div>
+        </div>
+    </div>
+
+    <!-- Feed -->
+    <div class="feed">
+        <div class="feed-hd">⚡ Recent Scale Reads</div>
+        <div id="feed-body" class="feed-body">
+            <div class="feed-empty">No reads yet.</div>
+        </div>
+    </div>
+</div>
+
+<div class="page-foot">QuickCart Live Monitor</div>
+<div class="position-fixed bottom-0 end-0 p-3" id="toast-box" style="z-index:9999"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let carts    = {};   // { "Name (NIF)": [{name,weight,price,scale}, …] }
+let cartMeta = {};
+let prevKeys = new Set();
+let prevCartSnapshot = {}; // for detecting which items are new
+
+// ── DOM ────────────────────────────────────────────────────────────────────
+const connPill   = document.getElementById('conn-pill');
+const connLabel  = document.getElementById('conn-label');
+const scalesRow  = document.getElementById('scales-row');
+const cartsGrid  = document.getElementById('carts-grid');
+const feedEl     = document.getElementById('feed-body');
+const sCustomers = document.getElementById('s-customers');
+const sItems     = document.getElementById('s-items');
+const sTotal     = document.getElementById('s-total');
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function cardId(customer) {
+    return 'cart-' + customer.replace(/[^a-z0-9]/gi, '-');
+}
+
+function fmtWeight(g) {
+    if (g === 1) return '1 unit';
+    if (g >= 1000) return (g / 1000).toFixed(3) + ' kg';
+    return g + ' g';
+}
+
+function fmtTime(ts) {
+    return (ts || '').slice(0, 16).replace('T', ' ');
+}
+
+// ── REST ───────────────────────────────────────────────────────────────────
+async function loadCarts() {
+    try {
+        const r = await fetch('/api/carts/active');
+        if (!r.ok) return;
+        const d = await r.json();
+        if (d.status !== 'success') return;
+        applyCarts(d.carts || {}, d.meta || {});
+        if (d.stats) applyStats(d.stats);
+    } catch(e) { console.warn(e); }
+}
+
+async function loadScales() {
+    try {
+        const r = await fetch('/api/scales/status');
+        if (!r.ok) return;
+        const d = await r.json();
+        if (d.status !== 'success') return;
+        renderScales(d.scales || []);
+        if (Array.isArray(d.recent_reads)) renderFeed(d.recent_reads);
+    } catch(e) { console.warn(e); }
+}
+
+function loadAll() { loadCarts(); loadScales(); }
+
+// ── Socket.IO ──────────────────────────────────────────────────────────────
+const socket = io(window.location.origin, {
+    transports: ['polling','websocket'],
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000
+});
+
+function setLive(live) {
+    connPill.classList.toggle('live', live);
+    connLabel.textContent = live ? 'System Live' : 'Disconnected';
+}
+
+socket.on('connect',       () => { setLive(true);  loadAll(); });
+socket.on('disconnect',    () => setLive(false));
+socket.on('connect_error', () => setLive(false));
+socket.on('reconnect',     () => { setLive(true);  loadAll(); });
+
+socket.on('update_event',  (d) => { applyCarts(d || {}, cartMeta); });
+socket.on('cart_meta',     (d) => { cartMeta = d || {}; });
+socket.on('stats_update',  (d) => { if (d) applyStats(d); });
+socket.on('status_update', (d) => { renderScales(d || []); });
+socket.on('reads_snapshot',(d) => { renderFeed(d || []); });
+socket.on('read_event',    (d) => { if (d) prependFeed(d); });
+socket.on('unknown_rfid_event', (d) => {
+    if (d) showToast(`Unknown tag <code>${d.rfid}</code> on ${d.scale_id}`);
+});
+
+// ── Scales ─────────────────────────────────────────────────────────────────
+function renderScales(scales) {
+    if (!scales.length) {
+        scalesRow.innerHTML = '<div style="color:var(--muted);font-size:.85rem">No scales registered.</div>';
+        return;
+    }
+    scalesRow.innerHTML = scales.map(s => {
+        const online  = (s.connectivity || '').toLowerCase() === 'online';
+        const sc      = online ? 'sc-online' : 'sc-offline';
+        const cb      = online ? 'cb-online'  : 'cb-offline';
+        const label   = online ? 'Online' : 'Offline';
+        const assigned = s.assigned_nif
+            ? `<div class="sc-assigned">👤 ${s.assigned_nif}</div>`
+            : `<div class="sc-meta" style="margin-top:.4rem">Unassigned</div>`;
+        const hb = s.last_status_age_sec != null
+            ? `<div>Heartbeat: ${s.last_status_age_sec}s ago</div>` : '';
+        const lr = s.last_reading
+            ? `<div>Last read: ${fmtTime(s.last_reading)}</div>` : '';
+        return `
+        <div class="scale-card ${sc}">
+            <div class="sc-top">
+                <div>
+                    <div class="sc-id">${s.scale_id}</div>
+                    <div class="sc-loc">${s.location || '—'}</div>
+                </div>
+                <span class="conn-badge ${cb}"><span class="bdot"></span>${label}</span>
+            </div>
+            ${assigned}
+            <div class="sc-meta">${hb}${lr}</div>
+        </div>`;
+    }).join('');
+}
+
+// ── Carts ──────────────────────────────────────────────────────────────────
+function applyCarts(incoming, meta) {
+    // Detect which customers changed or are new
+    const changedKeys = new Set();
+    Object.keys(incoming).forEach(k => {
+        const prev = JSON.stringify(carts[k] || []);
+        const next = JSON.stringify(incoming[k] || []);
+        if (prev !== next) changedKeys.add(k);
+    });
+
+    // Detect new items per customer (for row-level highlight)
+    const newItems = {};
+    Object.keys(incoming).forEach(k => {
+        const prevNames = new Set((carts[k] || []).map(i => i.name + '|' + i.weight));
+        newItems[k] = new Set(
+            (incoming[k] || [])
+                .filter(i => !prevNames.has(i.name + '|' + i.weight))
+                .map(i => i.name + '|' + i.weight)
+        );
+    });
+
+    carts    = incoming;
+    cartMeta = meta;
+    renderCarts(changedKeys, newItems);
+}
+
+function renderCarts(flashKeys = new Set(), newItems = {}) {
+    const entries = Object.entries(carts);
+    const curKeys = new Set(entries.map(([k]) => k));
+
+    if (entries.length === 0) {
+        cartsGrid.innerHTML = `
+            <div class="empty-carts">
+                <div class="empty-icon">🛒</div>
+                <div class="empty-title">No active carts</div>
+                <div style="font-size:.85rem">Carts appear here as customers scan items.</div>
+            </div>`;
+        prevKeys = new Set();
+        return;
+    }
+
+    // First render from empty
+    if (!prevKeys.size) {
+        cartsGrid.innerHTML = entries.map(([c, items]) => buildCard(c, items, new Set())).join('');
+        prevKeys = curKeys;
+        return;
+    }
+
+    // Remove departed
+    prevKeys.forEach(k => {
+        if (!curKeys.has(k)) document.getElementById(cardId(k))?.remove();
+    });
+    // Clear empty-state if it exists
+    cartsGrid.querySelector('.empty-carts')?.remove();
+
+    // Update or insert
+    entries.forEach(([customer, items]) => {
+        const el = document.getElementById(cardId(customer));
+        if (el) {
+            patchCard(el, customer, items, flashKeys.has(customer), newItems[customer] || new Set());
+        } else {
+            const tmp = document.createElement('div');
+            tmp.innerHTML = buildCard(customer, items, new Set());
+            cartsGrid.appendChild(tmp.firstElementChild);
+        }
+    });
+
+    prevKeys = curKeys;
+}
+
+function buildCard(customer, items, newSet) {
+    const scales   = [...new Set(items.map(i => i.scale).filter(Boolean))];
+    const scaleTags = scales.map(s => `<span class="cart-scale-tag">${s}</span>`).join(' ');
+    const total    = items.reduce((s, i) => s + (i.price || 0), 0);
+    const meta     = cartMeta[customer]?.last_update || '';
+    const nifMatch = customer.match(/\((\d+)\)/);
+    const nif      = nifMatch ? nifMatch[1] : '';
+    const name     = customer.replace(/\s*\(\d+\)\s*/, '').trim();
+
+    const rows = items.length
+        ? items.map(item => {
+            const key = item.name + '|' + item.weight;
+            const cls = newSet.has(key) ? 'row-new' : '';
+            return `<tr class="${cls}">
+                <td class="item-name">${item.name || '—'}</td>
+                <td>${fmtWeight(item.weight || 0)}</td>
+                <td>€${(item.price || 0).toFixed(2)}</td>
+            </tr>`;
+        }).join('')
+        : `<tr><td colspan="3" style="color:var(--muted);text-align:center;padding:1rem;font-size:.83rem">Cart is empty</td></tr>`;
+
+    return `
+    <div class="cart-card" id="${cardId(customer)}">
+        <div class="cart-head">
+            <div>
+                <div class="cart-name">${name}</div>
+                <div class="cart-nif">${nif}</div>
+            </div>
+            <div>${scaleTags}</div>
+        </div>
+        <table class="cart-table">
+            <tbody class="cart-tbody">${rows}</tbody>
+        </table>
+        <div class="cart-foot">
+            <span class="cart-updated">${meta ? 'Updated ' + fmtTime(meta) : ''}</span>
+            <span class="cart-total">€${total.toFixed(2)}</span>
+        </div>
+    </div>`;
+}
+
+function patchCard(el, customer, items, flash, newSet) {
+    const tbody  = el.querySelector('.cart-tbody');
+    const totEl  = el.querySelector('.cart-total');
+    const metaEl = el.querySelector('.cart-updated');
+    const total  = items.reduce((s, i) => s + (i.price || 0), 0);
+    const meta   = cartMeta[customer]?.last_update || '';
+
+    const rows = items.length
+        ? items.map(item => {
+            const key = item.name + '|' + item.weight;
+            const cls = newSet.has(key) ? 'row-new' : '';
+            return `<tr class="${cls}">
+                <td class="item-name">${item.name || '—'}</td>
+                <td>${fmtWeight(item.weight || 0)}</td>
+                <td>€${(item.price || 0).toFixed(2)}</td>
+            </tr>`;
+        }).join('')
+        : `<tr><td colspan="3" style="color:var(--muted);text-align:center;padding:1rem;font-size:.83rem">Cart is empty</td></tr>`;
+
+    if (tbody)  tbody.innerHTML  = rows;
+    if (totEl)  totEl.textContent  = `€${total.toFixed(2)}`;
+    if (metaEl) metaEl.textContent = meta ? 'Updated ' + fmtTime(meta) : '';
+
+    if (flash) {
+        el.classList.remove('flash');
+        void el.offsetWidth;
+        el.classList.add('flash');
+        el.addEventListener('animationend', () => el.classList.remove('flash'), { once: true });
+    }
+}
+
+// ── Stats ──────────────────────────────────────────────────────────────────
+function applyStats(s) {
+    sCustomers.textContent = s.active_customers ?? 0;
+    sItems.textContent     = s.item_count       ?? 0;
+    sTotal.textContent     = `€${((s.total_cents || 0) / 100).toFixed(2)}`;
+}
+
+// ── Feed ───────────────────────────────────────────────────────────────────
+function renderFeed(reads) {
+    if (!reads.length) { feedEl.innerHTML = '<div class="feed-empty">No reads yet.</div>'; return; }
+    feedEl.innerHTML = '';
+    reads.forEach(r => feedEl.appendChild(mkFeedRow(r)));
+}
+
+function prependFeed(item) {
+    feedEl.querySelector('.feed-empty')?.remove();
+    feedEl.insertBefore(mkFeedRow(item), feedEl.firstChild);
+    while (feedEl.children.length > 50) feedEl.removeChild(feedEl.lastChild);
+}
+
+function mkFeedRow(item) {
+    const el = document.createElement('div');
+    el.className = 'feed-row';
+    const product = item.product_name || `Tag ${item.rfid || '?'}`;
+    const wt      = item.weight_grams ? `<span class="feed-wt">· ${fmtWeight(item.weight_grams)}</span>` : '';
+    el.innerHTML  = `
+        <span class="feed-time">${fmtTime(item.created_at)}</span>
+        <span><span class="feed-prod">${product}</span>${wt}</span>
+        <span class="feed-sc">${item.scale_id || ''}</span>`;
+    return el;
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+function showToast(msg) {
+    const box = document.getElementById('toast-box');
+    if (!box) return;
+    const t = document.createElement('div');
+    t.className = 'toast align-items-center text-bg-dark border-0 show mb-2';
+    t.role = 'alert';
+    t.innerHTML = `<div class="d-flex"><div class="toast-body">${msg}</div>
+        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>`;
+    box.appendChild(t);
+    setTimeout(() => t.remove(), 6000);
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+loadAll();
+setInterval(loadAll, 10_000);
+</script>
 </body>
 </html>

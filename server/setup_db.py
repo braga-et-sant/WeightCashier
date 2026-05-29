@@ -89,29 +89,25 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS readings (
 
 # Weight-priced products
 cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('A1B2C3D4', 'Organic Apples', 'kg', 250)")
-cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_03', 'Bananas', 'kg', 185)")
-cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_04', 'Oranges', 'kg', 220)")
-cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_05', 'Pears', 'kg', 275)")
-cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_06', 'Grapes', 'kg', 395)")
-cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_07', 'Tomatoes', 'kg', 210)")
-cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_08', 'Potatoes', 'kg', 125)")
-cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_09', 'Carrots', 'kg', 175)")
-cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_10', 'Onions', 'kg', 160)")
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('43FED601', 'Bananas', 'kg', 185)")
 
 # Fixed-price products
 cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('04A1B2C3', 'Mineral Water 1.5L', 'unit', 65)")
-cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_11', 'Milk 1L', 'unit', 95)")
-cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_12', 'Pasta 500g', 'unit', 110)")
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('F9D8D301', 'Milk 1L', 'unit', 95)")
 
 # Demo customers for the two-smartphone test
 cursor.execute("INSERT INTO customers VALUES ('251342990', 'Martim Silva', 'martim@email.com', '1234')")
 cursor.execute("INSERT INTO customers VALUES ('200100400', 'John Doe', 'john.doe@email.com', '4321')")
 
 # Demo scale stations
-# Replace E2004100 and F3005200 if the real scale pairing tags produce
-# different values when scanned by the Android application.
-cursor.execute("INSERT INTO scales VALUES ('SCALE_01', 'Produce Section 1', '192.168.0.10', 'E2004100')")
-cursor.execute("INSERT INTO scales VALUES ('SCALE_02', 'Beverage Aisle 2', '192.168.0.11', 'F3005200')")
+# IMPORTANT: rfid_tag must match the physical NFC tag placed on each scale station.
+# scale_id must match the MQTT topic the Arduino firmware publishes on
+# (e.g. scale.cpp uses "SCALE_01", scale_02.cpp uses "SCALE_02").
+# The tag '4BB4D601' is what the running Arduino station physically exposes —
+# it is assigned to SCALE_01 so the tare command goes to supermarket/scale/SCALE_01/command,
+# which the flashed firmware subscribes to.
+cursor.execute("INSERT INTO scales VALUES ('SCALE_01', 'Produce Section 1', '192.168.0.10', '4BB4D601')")
+cursor.execute("INSERT INTO scales VALUES ('SCALE_02', 'Beverage Aisle 2', '192.168.0.11', '5BE66C91')")
 
 conn.commit()
 conn.close()

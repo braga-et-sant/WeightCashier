@@ -1,5 +1,5 @@
 from flask import Flask, render_template, request, redirect, url_for, jsonify, abort
-from flask_socketio import SocketIO, join_room
+from flask_socketio import SocketIO, join_room, emit
 import paho.mqtt.client as mqtt
 import sqlite3
 import json
@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('WC_SECRET_KEY') or os.urandom(32)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 DB_NAME = 'supermarket.db'
 MQTT_BROKER = "127.0.0.1"
@@ -76,6 +76,11 @@ pending_requests_lock = threading.Lock()
 
 mqtt_connected = False
 recent_errors = deque(maxlen=50)
+SCALE_ALIVE_WINDOW_SEC = 65  # Arduino heartbeats every 30 s; tolerate 2 missed beats
+
+scale_runtime_lock = threading.Lock()
+scale_runtime = {}
+pending_scale_pings = {}
 
 
 def utc_now_iso():
@@ -117,6 +122,14 @@ def ensure_schema():
         if "reading_id" not in archive_cols:
             cursor.execute("ALTER TABLE archive ADD COLUMN reading_id INTEGER")
             log_event("info", "db_migration", table="archive", column="reading_id")
+        
+        if "receipt_id" not in archive_cols:
+            cursor.execute("ALTER TABLE archive ADD COLUMN receipt_id TEXT")
+            log_event("info", "db_migration", table="archive", column="receipt_id")
+
+        if "suspended" not in archive_cols:
+            cursor.execute("ALTER TABLE archive ADD COLUMN suspended INTEGER NOT NULL DEFAULT 0")
+            log_event("info", "db_migration", table="archive", column="suspended")
 
         conn.commit()
     finally:
@@ -133,6 +146,15 @@ def get_product(rfid):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT product_id, name, unit, price_per_unit_cents FROM products WHERE rfid_id=?", (rfid,))
+    res = cursor.fetchone()
+    conn.close()
+    return res
+
+
+def get_scale_by_rfid(rfid):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT scale_id, location FROM scales WHERE rfid_tag=?", (rfid,))
     res = cursor.fetchone()
     conn.close()
     return res
@@ -276,22 +298,60 @@ def log_reading(scale_id, rfid, weight_grams, product_id=None, product_name=None
     conn.close()
     return reading_id
 
-def archive_cart(nif):
+
+def unassign_scale(scale_id):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(archive)")
-    cols = {row[1] for row in cursor.fetchall()}
-    if "reading_id" in cols:
-        cursor.execute('''INSERT INTO archive (customer_nif, scale_id, product_id, product_name, weight_grams, final_price_cents, reading_id)
-                          SELECT customer_nif, scale_id, product_id, product_name, weight_grams, final_price_cents, reading_id
-                          FROM active_carts WHERE customer_nif=?''', (nif,))
-    else:
-        cursor.execute('''INSERT INTO archive (customer_nif, scale_id, product_id, product_name, weight_grams, final_price_cents)
-                          SELECT customer_nif, scale_id, product_id, product_name, weight_grams, final_price_cents
-                          FROM active_carts WHERE customer_nif=?''', (nif,))
+    cursor.execute("DELETE FROM scale_assignments WHERE scale_id=?", (scale_id,))
+    conn.commit()
+    conn.close()
+
+def archive_cart(nif, suspended=False):
+    import uuid
+    receipt_id = str(uuid.uuid4())
+    suspended_flag = 1 if suspended else 0
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        '''INSERT INTO archive
+               (customer_nif, scale_id, product_id, product_name, weight_grams,
+                final_price_cents, reading_id, receipt_id, suspended)
+           SELECT customer_nif, scale_id, product_id, product_name, weight_grams,
+                  final_price_cents, reading_id, ?, ?
+           FROM active_carts WHERE customer_nif=?''',
+        (receipt_id, suspended_flag, nif)
+    )
     cursor.execute("DELETE FROM active_carts WHERE customer_nif=?", (nif,))
     conn.commit()
     conn.close()
+    return receipt_id
+
+
+def get_suspended_receipt(nif):
+    """Return the most recent suspended receipt for nif, or None."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        '''SELECT receipt_id, archived_at, product_name, weight_grams, final_price_cents, scale_id
+           FROM archive
+           WHERE customer_nif=? AND suspended=1
+           ORDER BY archived_at DESC''',
+        (nif,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    if not rows:
+        return None
+    receipt_id = rows[0][0]
+    archived_at = rows[0][1]
+    items = [
+        {"name": r[2], "weight_grams": r[3], "price_cents": r[4], "scale_id": r[5]}
+        for r in rows if r[0] == receipt_id
+    ]
+    total_cents = sum(i["price_cents"] for i in items)
+    return {"receipt_id": receipt_id, "archived_at": archived_at,
+            "items": items, "total_cents": total_cents}
+
 
 
 def is_duplicate_reading(scale_id, rfid, weight_grams):
@@ -348,11 +408,53 @@ def get_active_carts_formatted():
 def get_full_history():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute('''SELECT a.customer_nif, c.name, a.scale_id, a.product_name, a.weight_grams, a.final_price_cents, a.archived_at 
+    cursor.execute('''SELECT a.customer_nif, c.name, a.scale_id, a.product_name, a.weight_grams, a.final_price_cents, a.archived_at, a.receipt_id
                       FROM archive a LEFT JOIN customers c ON a.customer_nif = c.nif ORDER BY a.archived_at DESC''')
     res = cursor.fetchall()
     conn.close()
     return res
+
+
+def get_grouped_history():
+    """Return archive rows grouped by receipt_id, newest receipt first."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        '''SELECT a.receipt_id, a.customer_nif, c.name, a.archived_at,
+                  a.product_name, a.weight_grams, a.final_price_cents, a.scale_id
+           FROM archive a
+           LEFT JOIN customers c ON a.customer_nif = c.nif
+           WHERE a.suspended=0
+           ORDER BY a.archived_at DESC'''
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    receipts = {}
+    order = []
+    for row in rows:
+        receipt_id, nif, customer_name, archived_at, product_name, weight_grams, price_cents, scale_id = row
+        key = receipt_id if receipt_id else f"{nif}|{archived_at}"
+        if key not in receipts:
+            ts = (archived_at or '')[:16].replace('T', ' ')
+            receipts[key] = {
+                'receipt_id': (receipt_id or key)[:8].upper(),
+                'nif': nif,
+                'customer_name': customer_name or 'Unknown',
+                'archived_at': ts,
+                'receipt_items': [],
+                'total_cents': 0,
+            }
+            order.append(key)
+        receipts[key]['receipt_items'].append({
+            'product_name': product_name,
+            'weight_grams': weight_grams,
+            'price_cents': price_cents,
+            'scale_id': scale_id,
+        })
+        receipts[key]['total_cents'] += (price_cents or 0)
+
+    return [receipts[k] for k in order]
 
 def get_recent_reads(limit=10):
     conn = sqlite3.connect(DB_NAME)
@@ -419,6 +521,8 @@ def get_scale_statuses():
         else:
             health = "live"
 
+        connectivity, last_status_runtime, last_status_age_sec = get_scale_connectivity(scale_id)
+
         statuses.append({
             "scale_id": scale_id,
             "location": location,
@@ -427,7 +531,10 @@ def get_scale_statuses():
             "assigned_nif": assigned,
             "last_seen": last_seen,
             "last_reading": last_reading,
-            "health": health
+            "health": health,
+            "connectivity": connectivity,
+            "last_status": last_status_runtime,
+            "last_status_age_sec": last_status_age_sec
         })
 
     return statuses
@@ -470,22 +577,82 @@ def publish_scale_command(scale_id, command, payload=None):
     body = {"command": command}
     if payload:
         body.update(payload)
-    mqtt_client.publish(topic, json.dumps(body), qos=1, retain=False)
+    payload_json = json.dumps(body)
+    result = mqtt_client.publish(topic, payload_json, qos=1, retain=False)
+    log_event(
+        "info",
+        "publish_scale_command",
+        scale_id=scale_id,
+        command=command,
+        topic=topic,
+        payload=body,
+        rc=getattr(result, 'rc', None)
+    )
+
+
+def mark_scale_runtime_status(scale_id, status):
+    now_ts = time.time()
+    with scale_runtime_lock:
+        scale_runtime[scale_id] = {
+            "last_status": status,
+            "last_status_ts": now_ts
+        }
+        pending_event = pending_scale_pings.get(scale_id)
+
+    if pending_event:
+        pending_event.set()
+
+
+def get_scale_connectivity(scale_id):
+    with scale_runtime_lock:
+        runtime = scale_runtime.get(scale_id)
+    if not runtime:
+        return "offline", None, None
+
+    age_sec = max(0, int(time.time() - runtime["last_status_ts"]))
+    connectivity = "online" if age_sec <= SCALE_ALIVE_WINDOW_SEC else "offline"
+    return connectivity, runtime.get("last_status"), age_sec
+
+
+def ping_scale_and_check(scale_id, timeout_sec=2.0):
+    wait_event = threading.Event()
+    with scale_runtime_lock:
+        pending_scale_pings[scale_id] = wait_event
+
+    try:
+        publish_scale_command(scale_id, "ping")
+        responded = wait_event.wait(timeout_sec)
+    finally:
+        with scale_runtime_lock:
+            current = pending_scale_pings.get(scale_id)
+            if current is wait_event:
+                pending_scale_pings.pop(scale_id, None)
+
+    connectivity, last_status, age_sec = get_scale_connectivity(scale_id)
+    return {
+        "responded": responded,
+        "connectivity": connectivity,
+        "last_status": last_status,
+        "last_status_age_sec": age_sec
+    }
 
 def get_cart_payload_for_nif(nif):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute('''SELECT product_name, weight_grams, final_price_cents, scale_id
-                      FROM active_carts WHERE customer_nif=?''', (nif,))
+    cursor.execute('''SELECT a.product_name, a.weight_grams, a.final_price_cents, a.scale_id, p.unit, a.id
+                      FROM active_carts a LEFT JOIN products p ON a.product_id = p.product_id
+                      WHERE a.customer_nif=?''', (nif,))
     rows = cursor.fetchall()
     conn.close()
 
     items = [
         {
+            "id": row[5],
             "name": row[0],
             "weight_grams": row[1],
             "price_cents": row[2],
-            "scale": row[3]
+            "scale": row[3],
+            "unit": row[4] if row[4] else 'kg'
         }
         for row in rows
     ]
@@ -528,6 +695,8 @@ def clear_pending_request(scale_id):
 def assign_scale_to_customer(scale_id, customer_nif):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    # Unassign this customer from any other scale they might be assigned to
+    cursor.execute("DELETE FROM scale_assignments WHERE customer_nif=?", (customer_nif,))
     cursor.execute(
         """
         INSERT INTO scale_assignments (scale_id, customer_nif, assigned_at, last_seen)
@@ -552,6 +721,35 @@ def touch_scale_assignment(scale_id):
 def cleanup_expired_assignments():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    # Find customers whose session is expiring and still have active cart items
+    cursor.execute(
+        """
+        SELECT DISTINCT sa.customer_nif
+        FROM scale_assignments sa
+        JOIN active_carts ac ON ac.customer_nif = sa.customer_nif
+        WHERE (strftime('%s','now') - strftime('%s', sa.last_seen)) > ?
+        """,
+        (ASSIGNMENT_TTL_SEC,)
+    )
+    nifs_with_carts = [row[0] for row in cursor.fetchall()]
+    conn.close()
+
+    # Archive those carts as suspended before deleting the assignment
+    for nif in nifs_with_carts:
+        try:
+            archive_cart(nif, suspended=True)
+            log_event("info", "cart_suspended", nif=nif)
+            suspended_info = get_suspended_receipt(nif)
+            if suspended_info:
+                socketio.emit('cart_suspended', suspended_info, to=nif)
+            socketio.emit('update_event', get_active_carts_formatted())
+            socketio.emit('cart_meta', get_cart_meta())
+            socketio.emit('stats_update', get_live_stats())
+        except Exception as e:
+            log_event("error", "suspend_failed", nif=nif, error=str(e))
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute(
         """
         DELETE FROM scale_assignments
@@ -568,12 +766,64 @@ def cleanup_expired_assignments():
 def cleanup_loop():
     while True:
         try:
-            deleted = cleanup_expired_assignments()
-            if deleted:
-                socketio.emit('status_update', get_scale_statuses())
+            cleanup_expired_assignments()
+            # Always push scale status so the live monitor stays accurate even
+            # when no readings or heartbeats arrive (e.g. a scale going offline).
+            socketio.emit('status_update', get_scale_statuses())
         except Exception as e:
             log_event("error", "cleanup_failed", error=str(e))
         time.sleep(10)
+
+def restore_suspended_cart(nif):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT receipt_id FROM archive WHERE customer_nif=? AND suspended=1 ORDER BY archived_at DESC LIMIT 1",
+            (nif,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False
+        
+        receipt_id = row[0]
+
+        cursor.execute("DELETE FROM active_carts WHERE customer_nif=?", (nif,))
+
+        cursor.execute(
+            """
+            INSERT INTO active_carts (customer_nif, scale_id, product_id, product_name, weight_grams, final_price_cents, reading_id)
+            SELECT customer_nif, scale_id, product_id, product_name, weight_grams, final_price_cents, reading_id
+            FROM archive WHERE receipt_id=?
+            """,
+            (receipt_id,)
+        )
+        
+        cursor.execute("DELETE FROM archive WHERE receipt_id=?", (receipt_id,))
+        
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+def discard_suspended_cart(nif):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT receipt_id FROM archive WHERE customer_nif=? AND suspended=1 ORDER BY archived_at DESC LIMIT 1",
+            (nif,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False
+
+        receipt_id = row[0]
+        cursor.execute("UPDATE archive SET suspended=0 WHERE receipt_id=?", (receipt_id,))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
 
 def get_assigned_customer(scale_id):
     conn = sqlite3.connect(DB_NAME)
@@ -591,6 +841,28 @@ def get_assigned_customer(scale_id):
     conn.close()
     return res[0] if res else None
 
+@app.route('/api/cart/restore', methods=['POST'])
+def api_restore_cart():
+    nif, err = require_auth_nif()
+    if err:
+        return jsonify(err[0]), err[1]
+
+    if restore_suspended_cart(nif):
+        socketio.emit('cart_update', get_cart_payload_for_nif(nif), to=nif)
+        return jsonify({"status": "success"})
+    else:
+        return jsonify({"status": "not_found"}), 404
+
+@app.route('/api/cart/discard', methods=['POST'])
+def api_discard_cart():
+    nif, err = require_auth_nif()
+    if err:
+        return jsonify(err[0]), err[1]
+
+    if discard_suspended_cart(nif):
+        return jsonify({"status": "success"})
+    else:
+        return jsonify({"status": "not_found"}), 404
 # ==========================================
 # MQTT STREAM INTERCEPTOR & TELEMETRY
 # ==========================================
@@ -619,22 +891,23 @@ def on_message(client, userdata, msg):
 
             if weight_grams <= 0 or weight_grams > MAX_WEIGHT_GRAMS:
                 pending = get_pending_request(scale_id_raw)
-                target_nif = pending["nif"] if pending else (get_assigned_customer(scale_id_raw) or "GUEST_NIF")
+                target_nif = pending["nif"] if pending else get_assigned_customer(scale_id_raw)
                 log_event(
                     "warn",
                     "invalid_weight",
                     scale_id=scale_id_raw,
-                    nif=target_nif,
+                    nif=target_nif or "unassigned",
                     weight_grams=weight_grams,
                 )
-                socketio.emit('cart_error', {
-                    "reason": "invalid_weight",
-                    "scale_id": scale_id_raw,
-                    "weight_grams": weight_grams
-                }, to=target_nif)
+                if target_nif:
+                    socketio.emit('cart_error', {
+                        "reason": "invalid_weight",
+                        "scale_id": scale_id_raw,
+                        "weight_grams": weight_grams
+                    }, to=target_nif)
                 return
 
-            target_nif = get_assigned_customer(scale_id_raw) or "GUEST_NIF"
+            target_nif = get_assigned_customer(scale_id_raw)
 
             if is_duplicate_reading(scale_id_raw, rfid, weight_grams):
                 log_event(
@@ -642,7 +915,7 @@ def on_message(client, userdata, msg):
                     "reading_deduped",
                     scale_id=scale_id_raw,
                     rfid=rfid,
-                    nif=target_nif,
+                    nif=target_nif or "unassigned",
                     weight_grams=weight_grams,
                 )
                 return
@@ -650,17 +923,56 @@ def on_message(client, userdata, msg):
             product = get_product(rfid)
             if product:
                 product_id, p_name, unit, price_per_unit_cents = product
+                if unit == 'unit':
+                    log_event("warn", "invalid_scale_scan_unit_product", scale_id=scale_id_raw, rfid=rfid,
+                              nif=target_nif or "unassigned")
+                    log_reading(scale_id_raw, rfid, weight_grams)
+                    if target_nif:
+                        socketio.emit('cart_error', {
+                            "reason": "Scan unit products with your phone, not the scale.",
+                            "scale_id": scale_id_raw,
+                            "rfid": rfid
+                        }, to=target_nif)
+                    socketio.emit('read_event', {
+                        "scale_id": scale_id_raw,
+                        "rfid": rfid,
+                        "weight_grams": weight_grams,
+                        "product_name": p_name
+                    })
+                    socketio.emit('status_update', get_scale_statuses())
+                    return
+
                 if unit == 'kg':
                     final_price_cents = int((weight_grams * price_per_unit_cents + 500) / 1000)
                 else:
                     final_price_cents = int(price_per_unit_cents)
 
+                if not target_nif:
+                    # Scale not assigned to any customer — log for the monitor but don't add to any cart.
+                    log_reading(scale_id_raw, rfid, weight_grams, product_id, p_name)
+                    log_event("warn", "reading_no_assignment", scale_id=scale_id_raw,
+                              rfid=rfid, product=p_name, weight_grams=weight_grams)
+                    socketio.emit('read_event', {
+                        "scale_id": scale_id_raw, "rfid": rfid,
+                        "weight_grams": weight_grams, "product_name": p_name
+                    })
+                    socketio.emit('status_update', get_scale_statuses())
+                    return
+
                 reading_id = log_reading(scale_id_raw, rfid, weight_grams, product_id, p_name)
                 add_to_cart(target_nif, scale_id_raw, product_id, p_name, weight_grams, final_price_cents, reading_id)
                 clear_pending_request(scale_id_raw)
+                unassign_scale(scale_id_raw)
                 socketio.emit('update_event', get_active_carts_formatted())
                 socketio.emit('cart_meta', get_cart_meta())
                 socketio.emit('cart_update', get_cart_payload_for_nif(target_nif), to=target_nif)
+                socketio.emit('scale_reading', {
+                    "scale_id": scale_id_raw,
+                    "product_name": p_name,
+                    "weight_grams": weight_grams,
+                    "price_cents": final_price_cents,
+                    "rfid": rfid
+                }, to=target_nif)
                 socketio.emit('status_update', get_scale_statuses())
                 socketio.emit('stats_update', get_live_stats())
                 socketio.emit('read_event', {
@@ -671,13 +983,15 @@ def on_message(client, userdata, msg):
                 })
             else:
                 log_reading(scale_id_raw, rfid, weight_grams)
-                log_event("warn", "unknown_rfid", scale_id=scale_id_raw, rfid=rfid, nif=target_nif)
+                log_event("warn", "unknown_rfid", scale_id=scale_id_raw, rfid=rfid,
+                          nif=target_nif or "unassigned")
                 socketio.emit('unknown_rfid_event', {'rfid': rfid, 'scale_id': scale_id_raw})
-                socketio.emit('cart_error', {
-                    "reason": "unknown_rfid",
-                    "scale_id": scale_id_raw,
-                    "rfid": rfid
-                }, to=target_nif)
+                if target_nif:
+                    socketio.emit('cart_error', {
+                        "reason": "unknown_rfid",
+                        "scale_id": scale_id_raw,
+                        "rfid": rfid
+                    }, to=target_nif)
                 socketio.emit('status_update', get_scale_statuses())
                 socketio.emit('read_event', {
                     "scale_id": scale_id_raw,
@@ -691,6 +1005,8 @@ def on_message(client, userdata, msg):
             data = json.loads(msg.payload)
             status = data.get('status')
             reason = data.get('reason')
+
+            mark_scale_runtime_status(scale_id_raw, status)
 
             if status == "alive":
                 touch_scale_assignment(scale_id_raw)
@@ -730,8 +1046,23 @@ mqtt_client = mqtt.Client()
 mqtt_client.on_connect = on_connect
 mqtt_client.on_disconnect = on_disconnect
 mqtt_client.on_message = on_message
-mqtt_client.connect(MQTT_BROKER, 1883, 60)
-threading.Thread(target=mqtt_client.loop_forever, daemon=True).start()
+
+
+def _mqtt_connect_loop():
+    """Daemon thread: connect to broker and keep reconnecting on failure."""
+    retry_delay = 2
+    while True:
+        try:
+            mqtt_client.connect(MQTT_BROKER, 1883, 60)
+            retry_delay = 2
+            mqtt_client.loop_forever()
+        except Exception as e:
+            log_event("warn", "mqtt_connect_retry", broker=MQTT_BROKER, error=str(e), delay_sec=retry_delay)
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 30)
+
+
+threading.Thread(target=_mqtt_connect_loop, daemon=True).start()
 threading.Thread(target=cleanup_loop, daemon=True).start()
 
 # ==========================================
@@ -825,11 +1156,100 @@ def api_assign_scale():
     if not is_scale_available(scale_id, nif):
         return jsonify({"status": "busy", "message": "Scale is in use."}), 409
 
-    set_pending_request(scale_id, nif)
-    publish_scale_command(scale_id, "tare")
-
+    assign_scale_to_customer(scale_id, nif)
     socketio.emit('status_update', get_scale_statuses())
-    return jsonify({"status": "pending", "scale_id": scale_id})
+    return jsonify({"status": "success", "scale_id": scale_id})
+
+@app.route('/api/cart/add', methods=['POST'])
+def api_cart_add():
+    auth_nif, err = require_auth_nif()
+    if err:
+        return jsonify(err[0]), err[1]
+
+    data = request.json or {}
+    nif = (data.get('nif') or '').strip()
+    rfid = (data.get('rfid') or '').strip().upper()
+
+    if not validate_nif(nif) or nif != auth_nif:
+        return jsonify({"status": "forbidden", "message": "NIF does not match token."}), 403
+
+    if not rfid:
+        return jsonify({"status": "invalid", "message": "Missing product tag."}), 400
+
+    product = get_product(rfid)
+    if not product:
+        return jsonify({"status": "not_found", "message": "Unknown product tag."}), 404
+
+    product_id, name, unit, price_per_unit_cents = product
+    if unit != "unit":
+        return jsonify({"status": "invalid", "message": "Weighted items must be added through a connected scale."}), 400
+
+    final_price_cents = int(price_per_unit_cents)
+    add_to_cart(nif, "PHONE", product_id, name, 1, final_price_cents)
+    socketio.emit('update_event', get_active_carts_formatted())
+    socketio.emit('cart_meta', get_cart_meta())
+    socketio.emit('cart_update', get_cart_payload_for_nif(nif), to=nif)
+    socketio.emit('stats_update', get_live_stats())
+
+    return jsonify({"status": "success", "message": "Product added to cart."})
+
+@app.route('/api/product/lookup', methods=['POST'])
+def api_product_lookup():
+    auth_nif, err = require_auth_nif()
+    if err:
+        return jsonify(err[0]), err[1]
+
+    data = request.json or {}
+    rfid = (data.get('rfid') or '').strip().upper()
+
+    if not rfid:
+        return jsonify({"status": "invalid", "message": "Missing product tag."}), 400
+
+    product = get_product(rfid)
+    if product:
+        product_id, name, unit, price_per_unit_cents = product
+        return jsonify({
+            "status": "success",
+            "rfid": rfid,
+            "product_id": product_id,
+            "name": name,
+            "unit": unit,
+            "price_per_unit_cents": price_per_unit_cents
+        })
+
+    scale_info = get_scale_by_rfid(rfid)
+    if scale_info:
+        scale_id, location = scale_info
+        return jsonify({
+            "status": "scale",
+            "rfid": rfid,
+            "scale_id": scale_id,
+            "location": location,
+            "message": "This tag is a scale, not a product. Use the Scan Scale Tag button to assign it."
+        })
+
+    return jsonify({"status": "not_found", "message": "Unknown product tag."}), 404
+
+@app.route('/api/scale/release', methods=['POST'])
+def api_release_scale():
+    auth_nif, err = require_auth_nif()
+    if err:
+        return jsonify(err[0]), err[1]
+
+    data = request.json or {}
+    scale_id = (data.get('scale_id') or '').strip().upper()
+
+    if not scale_id:
+        return jsonify({"status": "invalid", "message": "Missing scale_id."}), 400
+
+    # Ensure the caller owns the assignment before releasing it (or just clear it)
+    assigned_nif = get_assigned_customer(scale_id)
+    if assigned_nif and assigned_nif != auth_nif:
+        return jsonify({"status": "forbidden", "message": "Scale is assigned to someone else."}), 403
+
+    unassign_scale(scale_id)
+    socketio.emit('status_update', get_scale_statuses())
+    return jsonify({"status": "success"})
 
 @app.route('/api/cart/<nif>', methods=['GET'])
 def api_cart(nif):
@@ -843,17 +1263,20 @@ def api_cart(nif):
 
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute('''SELECT product_name, weight_grams, final_price_cents, scale_id
-                      FROM active_carts WHERE customer_nif=?''', (nif,))
+    cursor.execute('''SELECT ac.product_name, ac.weight_grams, ac.final_price_cents, ac.scale_id, p.unit, ac.id
+                      FROM active_carts ac LEFT JOIN products p ON ac.product_id = p.product_id
+                      WHERE ac.customer_nif=?''', (nif,))
     rows = cursor.fetchall()
     conn.close()
 
     items = [
         {
+            "id": row[5],
             "name": row[0],
             "weight_grams": row[1],
             "price_cents": row[2],
-            "scale": row[3]
+            "scale": row[3],
+            "unit": row[4] if row[4] else 'kg'
         }
         for row in rows
     ]
@@ -881,6 +1304,169 @@ def api_cart_reset():
 
     return jsonify({"status": "success"})
 
+@app.route('/api/cart/history/<nif>', methods=['GET'])
+def api_cart_history(nif):
+    auth_nif, err = require_auth_nif()
+    if err:
+        return jsonify(err[0]), err[1]
+
+    nif = (nif or '').strip()
+    if not validate_nif(nif) or nif != auth_nif:
+        return jsonify({"status": "forbidden"}), 403
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        '''SELECT a.receipt_id, a.archived_at, a.product_name, a.weight_grams,
+                  a.final_price_cents, a.scale_id, p.unit
+           FROM archive a
+           LEFT JOIN products p ON a.product_id = p.product_id
+           WHERE a.customer_nif=? AND a.suspended=0
+           ORDER BY a.archived_at DESC
+           LIMIT 100''',
+        (nif,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    receipts = {}
+    order = []
+    for row in rows:
+        receipt_id, archived_at, product_name, weight_grams, final_price_cents, scale_id, unit = row
+        if receipt_id not in receipts:
+            receipts[receipt_id] = {
+                "receipt_id": receipt_id,
+                "archived_at": archived_at or "",
+                "items": [],
+                "total_cents": 0
+            }
+            order.append(receipt_id)
+        receipts[receipt_id]["items"].append({
+            "name": product_name,
+            "weight_grams": weight_grams,
+            "price_cents": final_price_cents,
+            "scale": scale_id,
+            "unit": unit if unit else "kg"
+        })
+        receipts[receipt_id]["total_cents"] += final_price_cents
+
+    return jsonify({"status": "success", "receipts": [receipts[r] for r in order]})
+
+@app.route('/api/cart/item/<int:item_id>', methods=['DELETE'])
+def api_cart_delete_item(item_id):
+    auth_nif, err = require_auth_nif()
+    if err:
+        return jsonify(err[0]), err[1]
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT customer_nif FROM active_carts WHERE id=?", (item_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"status": "not_found"}), 404
+    if row[0] != auth_nif:
+        conn.close()
+        return jsonify({"status": "forbidden"}), 403
+
+    cursor.execute("DELETE FROM active_carts WHERE id=?", (item_id,))
+    conn.commit()
+    conn.close()
+
+    socketio.emit('update_event', get_active_carts_formatted())
+    socketio.emit('cart_meta', get_cart_meta())
+    socketio.emit('cart_update', get_cart_payload_for_nif(auth_nif), to=auth_nif)
+    socketio.emit('stats_update', get_live_stats())
+    return jsonify({"status": "success"})
+
+@app.route('/api/cart/suspended/<nif>', methods=['GET'])
+def api_cart_suspended(nif):
+    auth_nif, err = require_auth_nif()
+    if err:
+        return jsonify(err[0]), err[1]
+    nif = (nif or '').strip()
+    if not validate_nif(nif) or nif != auth_nif:
+        return jsonify({"status": "forbidden"}), 403
+    receipt = get_suspended_receipt(nif)
+    if receipt:
+        return jsonify({"status": "found", "receipt": receipt})
+    return jsonify({"status": "none"})
+
+@app.route('/api/cart/suspended/<nif>/restore', methods=['POST'])
+def api_cart_restore(nif):
+    """Move suspended items back into active_carts."""
+    auth_nif, err = require_auth_nif()
+    if err:
+        return jsonify(err[0]), err[1]
+    nif = (nif or '').strip()
+    if not validate_nif(nif) or nif != auth_nif:
+        return jsonify({"status": "forbidden"}), 403
+
+    receipt = get_suspended_receipt(nif)
+    if not receipt:
+        return jsonify({"status": "none"})
+
+    receipt_id = receipt["receipt_id"]
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        '''INSERT INTO active_carts
+               (customer_nif, scale_id, product_id, product_name, weight_grams,
+                final_price_cents, reading_id)
+           SELECT customer_nif, scale_id, product_id, product_name, weight_grams,
+                  final_price_cents, reading_id
+           FROM archive WHERE receipt_id=? AND customer_nif=?''',
+        (receipt_id, nif)
+    )
+    cursor.execute("DELETE FROM archive WHERE receipt_id=? AND customer_nif=?", (receipt_id, nif))
+    conn.commit()
+    conn.close()
+
+    socketio.emit('update_event', get_active_carts_formatted())
+    socketio.emit('cart_meta', get_cart_meta())
+    socketio.emit('cart_update', get_cart_payload_for_nif(nif), to=nif)
+    socketio.emit('stats_update', get_live_stats())
+    return jsonify({"status": "success"})
+
+@app.route('/api/cart/suspended/<nif>/discard', methods=['POST'])
+def api_cart_discard_suspended(nif):
+    """Clear the suspended receipt without restoring."""
+    auth_nif, err = require_auth_nif()
+    if err:
+        return jsonify(err[0]), err[1]
+    nif = (nif or '').strip()
+    if not validate_nif(nif) or nif != auth_nif:
+        return jsonify({"status": "forbidden"}), 403
+
+    receipt = get_suspended_receipt(nif)
+    if not receipt:
+        return jsonify({"status": "none"})
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE archive SET suspended=0 WHERE receipt_id=? AND customer_nif=?",
+        (receipt["receipt_id"], nif)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "success"})
+
+@app.route('/api/carts/active', methods=['GET'])
+def api_carts_active():
+    active = get_active_carts_formatted()
+    meta = get_cart_meta()
+    stats = get_live_stats()
+    return jsonify({"status": "success", "carts": active, "meta": meta, "stats": stats})
+
+@app.route('/api/scales/status', methods=['GET'])
+def api_scales_status():
+    return jsonify({
+        "status": "success",
+        "scales": get_scale_statuses(),
+        "recent_reads": get_recent_reads()
+    })
+
 @app.route('/api/scale/heartbeat', methods=['POST'])
 def api_scale_heartbeat():
     _, err = require_auth_nif()
@@ -899,11 +1485,27 @@ def api_scale_heartbeat():
 # ==========================================
 @socketio.on('connect')
 def handle_connect():
-    socketio.emit('update_event', get_active_carts_formatted())
-    socketio.emit('cart_meta', get_cart_meta())
-    socketio.emit('status_update', get_scale_statuses())
-    socketio.emit('stats_update', get_live_stats())
-    socketio.emit('reads_snapshot', get_recent_reads())
+    # emit() (not socketio.emit()) sends only to the newly connected client.
+    emit('update_event', get_active_carts_formatted())
+    emit('cart_meta', get_cart_meta())
+    emit('status_update', get_scale_statuses())
+    emit('stats_update', get_live_stats())
+    emit('reads_snapshot', get_recent_reads())
+
+def get_scale_for_customer(nif):
+    """Return the scale_id currently assigned to nif, or None."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT scale_id FROM scale_assignments
+           WHERE customer_nif=?
+             AND (strftime('%s','now') - strftime('%s', last_seen)) <= ?""",
+        (nif, ASSIGNMENT_TTL_SEC)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
 
 @socketio.on('register_android')
 def handle_android_register(data):
@@ -911,7 +1513,15 @@ def handle_android_register(data):
     nif = verify_token(token)
     if nif:
         join_room(nif)
-        socketio.emit('cart_update', get_cart_payload_for_nif(nif), to=nif)
+        emit('cart_update', get_cart_payload_for_nif(nif))
+        # Re-send scale_ready if there is an active assignment (reconnect recovery).
+        assigned_scale = get_scale_for_customer(nif)
+        if assigned_scale:
+            emit('scale_ready', {"scale_id": assigned_scale})
+        # Notify about any suspended (abandoned) cart so the app can prompt the user.
+        suspended = get_suspended_receipt(nif)
+        if suspended:
+            emit('cart_suspended', suspended)
 
 @socketio.on('android_heartbeat')
 def handle_android_heartbeat(data):
@@ -925,16 +1535,16 @@ def index():
 
 @app.route('/admin')
 def admin_dashboard():
-    history_logs = get_full_history()
-    total_revenue_cents = sum(item[5] for item in history_logs)
+    history_groups = get_grouped_history()
+    total_revenue_cents = sum(r['total_cents'] for r in history_groups)
     total_revenue = round(total_revenue_cents / 100.0, 2)
-    
-    return render_template('admin.html', 
+
+    return render_template('admin.html',
                            products=get_all_products(),
                            customers=get_all_customers(),
                            scales=get_all_scales(),
                            active_carts=get_active_carts_formatted(),
-                           history=history_logs,
+                           history=history_groups,
                            revenue=total_revenue,
                            recent_errors=list(recent_errors))
 
@@ -1049,6 +1659,30 @@ def admin_delete_scale(scale_id):
         abort(400, description='Invalid scale_id')
     delete_scale(scale_id)
     return redirect(url_for('admin_dashboard'))
+
+
+@app.route('/admin/scale/ping/<scale_id>', methods=['POST'])
+def admin_ping_scale(scale_id):
+    scale_id = (scale_id or '').strip().upper()
+    if not scale_id:
+        return jsonify({"status": "invalid", "message": "Invalid scale_id"}), 400
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM scales WHERE scale_id=?", (scale_id,))
+    exists = cursor.fetchone() is not None
+    conn.close()
+
+    if not exists:
+        return jsonify({"status": "not_found", "message": "Scale not found"}), 404
+
+    ping_result = ping_scale_and_check(scale_id)
+    socketio.emit('status_update', get_scale_statuses())
+    return jsonify({
+        "status": "success",
+        "scale_id": scale_id,
+        **ping_result
+    })
 
 if __name__ == '__main__':
     socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=False)
