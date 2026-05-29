@@ -2,6 +2,7 @@ import sqlite3
 import os
 
 # Remove old database if exists to ensure a clean setup
+# IMPORTANT: Running this file deletes the old database and all existing carts/history.
 if os.path.exists('supermarket.db'):
     os.remove('supermarket.db')
 
@@ -42,7 +43,8 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS active_carts (
                     reading_id INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
-# 5. ARCHIVED ORDERS TABLE (Historical Sales Log)
+# 5. ARCHIVED ORDERS TABLE (Historical Sales Log / Grouped Receipts)
+# receipt_id lets the History tab group all products from the same completed cart.
 cursor.execute('''CREATE TABLE IF NOT EXISTS archive (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     customer_nif TEXT NOT NULL,
@@ -52,6 +54,7 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS archive (
                     weight_grams INTEGER NOT NULL,
                     final_price_cents INTEGER NOT NULL,
                     reading_id INTEGER,
+                    receipt_id TEXT,
                     archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
 # 6. SCALE ASSIGNMENTS (Persistence with TTL/heartbeat)
@@ -72,15 +75,44 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS readings (
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
 # --- INITIAL DEMO DATA ---
-cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('A1B2C3D4', 'Organic Apples', 'kg', 250)")
-cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('04A1B2C3', 'Mineral Water 1.5L', 'unit', 65)")
+# PRODUCT RFID NOTES:
+# - The first two RFID values are kept from the current mock/test setup:
+#       A1B2C3D4 = Organic Apples
+#       04A1B2C3 = Mineral Water 1.5L
+# - Replace REPLACE_WITH_UID_03 through REPLACE_WITH_UID_12 with the exact
+#   physical RFID UID values after your tags are read.
+# - Keep each RFID UID unique.
+#
+# PRICE FORMAT:
+# - unit 'kg'   -> price_per_unit_cents is cents per kilogram.
+# - unit 'unit' -> price_per_unit_cents is cents per item.
 
+# Weight-priced products
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('A1B2C3D4', 'Organic Apples', 'kg', 250)")
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_03', 'Bananas', 'kg', 185)")
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_04', 'Oranges', 'kg', 220)")
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_05', 'Pears', 'kg', 275)")
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_06', 'Grapes', 'kg', 395)")
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_07', 'Tomatoes', 'kg', 210)")
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_08', 'Potatoes', 'kg', 125)")
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_09', 'Carrots', 'kg', 175)")
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_10', 'Onions', 'kg', 160)")
+
+# Fixed-price products
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('04A1B2C3', 'Mineral Water 1.5L', 'unit', 65)")
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_11', 'Milk 1L', 'unit', 95)")
+cursor.execute("INSERT INTO products (rfid_id, name, unit, price_per_unit_cents) VALUES ('REPLACE_WITH_UID_12', 'Pasta 500g', 'unit', 110)")
+
+# Demo customers for the two-smartphone test
 cursor.execute("INSERT INTO customers VALUES ('251342990', 'Martim Silva', 'martim@email.com', '1234')")
 cursor.execute("INSERT INTO customers VALUES ('200100400', 'John Doe', 'john.doe@email.com', '4321')")
 
+# Demo scale stations
+# Replace E2004100 and F3005200 if the real scale pairing tags produce
+# different values when scanned by the Android application.
 cursor.execute("INSERT INTO scales VALUES ('SCALE_01', 'Produce Section 1', '192.168.0.10', 'E2004100')")
 cursor.execute("INSERT INTO scales VALUES ('SCALE_02', 'Beverage Aisle 2', '192.168.0.11', 'F3005200')")
 
 conn.commit()
 conn.close()
-print("Success: Professional Relational Database Schema 'supermarket.db' initialized.")
+print("Success: Professional Relational Database Schema 'supermarket.db' initialized with extended product catalogue.")
