@@ -13,3 +13,38 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Android generated/local files
+.gradle/
+.idea/
+local.properties
+**/build/
+*.apk
+*.aab
+
+# Python generated/local files
+server/.venv/
+server/__pycache__/
+server/*.pyc
+
+# Runtime/test output
+server/benchmark_*.csv
+server/*.log
+
+# Android generated/local files
+.gradle/
+.idea/
+local.properties
+**/build/
+*.apk
+*.aab
+
+# Python generated/local files
+server/.venv/
+server/__pycache__/
+server/*.pyc
+
+# Runtime/test output
+server/benchmark_*.csv
+server/*.log
+server/supermarket.db
