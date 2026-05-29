@@ -46,7 +46,7 @@ import com.example.weightcashier.ui.theme.WeightCashierTheme
 import android.content.Context
 
 const val SERVER_PORT = 5000
-const val DEFAULT_SERVER_IP = "192.168.0.2"
+const val DEFAULT_SERVER_IP = "192.168.1.249"
 
 private const val PREFS_NAME = "weightcashier_prefs"
 private const val PREF_SERVER_IP = "server_ip"
@@ -548,7 +548,7 @@ fun WeightingCashierApp(
                     ) {
 
                         Text(
-                            "Pair a Scale",
+                            "Read Tag / Producte",
                             style = MaterialTheme.typography.titleMedium
                         )
 
